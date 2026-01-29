@@ -15,7 +15,7 @@ router.post("/", async (req, res) => {
 
     const expected = crypto
       .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(req.body) // 🔥 RAW BODY REQUIRED
+      .update(req.body)
       .digest("hex");
 
     if (signature !== expected) {
@@ -25,29 +25,54 @@ router.post("/", async (req, res) => {
     const payload = JSON.parse(req.body.toString());
     const event = payload.event;
 
-    // ✅ PAYMENT SUCCESS
-    if (event === "invoice.paid") {
-      const invoice = payload.payload.invoice.entity;
+    console.log("Webhook:", event);
+
+    /* ✅ SUBSCRIPTION ACTIVATED → ACCESS ON */
+    if (event === "subscription.activated") {
+      const sub = payload.payload.subscription.entity;
 
       await supabase
         .from("subscriptions")
         .update({
           status: "active",
-          razorpay_payment_id: invoice.payment_id
+          start_date: new Date().toISOString()
         })
-        .eq("razorpay_subscription_id", invoice.subscription_id);
+        .eq("razorpay_subscription_id", sub.id);
     }
 
-    // ❌ PAYMENT FAILED / AUTO-DEBIT FAILED
-    if (event === "invoice.payment_failed") {
-      const invoice = payload.payload.invoice.entity;
+    /* ✅ PAYMENT CAPTURED → SAVE PAYMENT ID */
+    if (event === "payment.captured") {
+      const pay = payload.payload.payment.entity;
 
       await supabase
         .from("subscriptions")
         .update({
-          status: "expired"
+          razorpay_payment_id: pay.id
         })
-        .eq("razorpay_subscription_id", invoice.subscription_id);
+        .eq("razorpay_subscription_id", pay.subscription_id);
+    }
+
+    /* 🔄 AUTO-DEBIT ATTEMPT */
+    if (event === "subscription.charged") {
+      const sub = payload.payload.subscription.entity;
+
+      if (sub.status === "active") {
+        await supabase
+          .from("subscriptions")
+          .update({ status: "active" })
+          .eq("razorpay_subscription_id", sub.id);
+      }
+
+      if (sub.status === "halted") {
+        // 👇 24 HOURS GRACE START
+        await supabase
+          .from("subscriptions")
+          .update({
+            status: "grace",
+            grace_started_at: new Date().toISOString()
+          })
+          .eq("razorpay_subscription_id", sub.id);
+      }
     }
 
     res.json({ success: true });

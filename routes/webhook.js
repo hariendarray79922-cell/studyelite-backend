@@ -19,40 +19,31 @@ router.post("/", async (req, res) => {
       .digest("hex");
 
     if (signature !== expected) {
+      console.log("❌ Invalid webhook signature");
       return res.status(400).send("Invalid signature");
     }
 
     const payload = JSON.parse(req.body.toString());
     const event = payload.event;
 
-    console.log("Webhook:", event);
+    console.log("✅ Webhook received:", event);
 
-    /* ✅ SUBSCRIPTION ACTIVATED → ACCESS ON */
+    /* 🔥 TRIAL / AUTOPAY ACTIVATED */
     if (event === "subscription.activated") {
       const sub = payload.payload.subscription.entity;
 
       await supabase
         .from("subscriptions")
         .update({
-          status: "active",
+          status: "active",          // 🔓 ACCESS ON
           start_date: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", sub.id);
+
+      console.log("✅ Subscription activated:", sub.id);
     }
 
-    /* ✅ PAYMENT CAPTURED → SAVE PAYMENT ID */
-    if (event === "payment.captured") {
-      const pay = payload.payload.payment.entity;
-
-      await supabase
-        .from("subscriptions")
-        .update({
-          razorpay_payment_id: pay.id
-        })
-        .eq("razorpay_subscription_id", pay.subscription_id);
-    }
-
-    /* 🔄 AUTO-DEBIT ATTEMPT */
+    /* 🔄 MONTHLY AUTO-DEBIT */
     if (event === "subscription.charged") {
       const sub = payload.payload.subscription.entity;
 
@@ -61,17 +52,8 @@ router.post("/", async (req, res) => {
           .from("subscriptions")
           .update({ status: "active" })
           .eq("razorpay_subscription_id", sub.id);
-      }
 
-      if (sub.status === "halted") {
-        // 👇 24 HOURS GRACE START
-        await supabase
-          .from("subscriptions")
-          .update({
-            status: "grace",
-            grace_started_at: new Date().toISOString()
-          })
-          .eq("razorpay_subscription_id", sub.id);
+        console.log("✅ Auto-debit success:", sub.id);
       }
     }
 

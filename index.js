@@ -10,6 +10,15 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
+
+/* 🔥 WEBHOOK MUST COME BEFORE express.json */
+app.use(
+  "/webhook",
+  express.raw({ type: "application/json" }),
+  webhook
+);
+
+/* Normal JSON after webhook */
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -17,9 +26,8 @@ app.get("/", (req, res) => {
 });
 
 app.use("/create-subscription", createSubscription);
-app.use("/webhook", webhook);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });

@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 
 import createSubscription from "./routes/createSubscription.js";
 import webhook from "./routes/webhook.js";
+import verifyPayment from "./routes/verifyPayment.js"; // ✅ NEW
 
 dotenv.config();
 
@@ -32,6 +33,9 @@ app.get("/", (req, res) => {
 
 /* ✅ Create subscription */
 app.use("/create-subscription", createSubscription);
+
+/* ✅ Verify payment (NO webhook dependency) */
+app.use("/verify-payment", verifyPayment);
 
 /* ✅ Start server */
 const PORT = process.env.PORT || 10000;

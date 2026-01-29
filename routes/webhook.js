@@ -1,41 +1,48 @@
-import express from "express";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-
-const router = express.Router();
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-router.post("/", async (req, res) => {
+export default async function webhook(req, res) {
   try {
     const signature = req.headers["x-razorpay-signature"];
 
+    if (!signature) {
+      console.log("❌ No signature header");
+      return res.status(400).send("No signature");
+    }
+
+    const body = req.body.toString("utf8");
+
     const expected = crypto
       .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(req.body)
+      .update(body)
       .digest("hex");
 
-    if (signature !== expected) {
-      console.log("❌ Invalid webhook signature");
+    if (!crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    )) {
+      console.log("❌ Invalid signature");
       return res.status(400).send("Invalid signature");
     }
 
-    const payload = JSON.parse(req.body.toString());
+    const payload = JSON.parse(body);
     const event = payload.event;
 
     console.log("✅ Webhook received:", event);
 
-    /* 🔥 TRIAL / AUTOPAY ACTIVATED */
+    /* 🔓 SUBSCRIPTION ACTIVATED */
     if (event === "subscription.activated") {
       const sub = payload.payload.subscription.entity;
 
       await supabase
         .from("subscriptions")
         .update({
-          status: "active",          // 🔓 ACCESS ON
+          status: "active",
           start_date: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", sub.id);
@@ -43,25 +50,37 @@ router.post("/", async (req, res) => {
       console.log("✅ Subscription activated:", sub.id);
     }
 
-    /* 🔄 MONTHLY AUTO-DEBIT */
-    if (event === "subscription.charged") {
-      const sub = payload.payload.subscription.entity;
+    /* 💰 PAYMENT CAPTURED */
+    if (event === "payment.captured") {
+      const payment = payload.payload.payment.entity;
 
-      if (sub.status === "active") {
-        await supabase
-          .from("subscriptions")
-          .update({ status: "active" })
-          .eq("razorpay_subscription_id", sub.id);
+      await supabase
+        .from("subscriptions")
+        .update({
+          razorpay_payment_id: payment.id
+        })
+        .eq("razorpay_subscription_id", payment.subscription_id);
 
-        console.log("✅ Auto-debit success:", sub.id);
-      }
+      console.log("✅ Payment saved:", payment.id);
+    }
+
+    /* ❌ PAYMENT FAILED */
+    if (event === "invoice.payment_failed") {
+      const invoice = payload.payload.invoice.entity;
+
+      await supabase
+        .from("subscriptions")
+        .update({
+          status: "expired"
+        })
+        .eq("razorpay_subscription_id", invoice.subscription_id);
+
+      console.log("❌ Payment failed:", invoice.subscription_id);
     }
 
     res.json({ success: true });
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("🔥 Webhook error:", err);
     res.status(500).send("Webhook error");
   }
-});
-
-export default router;
+}

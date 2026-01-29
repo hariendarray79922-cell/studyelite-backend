@@ -22,6 +22,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Missing app_id or user_id" });
     }
 
+    // 🔎 Fetch app
     const { data: app, error } = await supabase
       .from("apps")
       .select("*")
@@ -32,6 +33,7 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "App not found" });
     }
 
+    // 💳 Create Razorpay subscription
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
@@ -39,21 +41,22 @@ router.post("/", async (req, res) => {
       start_at: Math.floor(Date.now() / 1000) + app.trial_days * 86400
     });
 
+    // ❗ IMPORTANT: NO ACCESS YET
     await supabase.from("subscriptions").insert({
       user_id,
       app_id,
-      status: "trial",
+      status: "pending", // ✅ FIX
       amount: app.price,
       razorpay_subscription_id: subscription.id
     });
 
-    res.json({
+    return res.json({
       key: process.env.RAZORPAY_KEY_ID,
       subscription_id: subscription.id
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Create subscription error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });

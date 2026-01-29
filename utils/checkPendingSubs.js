@@ -37,7 +37,6 @@ export async function checkPendingSubscriptions() {
 
           console.log("✅ Subscription activated:", sub.id);
         }
-
       } catch (e) {
         console.log("⏭️ Skipped:", sub.id);
       }
@@ -45,4 +44,4 @@ export async function checkPendingSubscriptions() {
   } catch (err) {
     console.log("Checker error:", err.message);
   }
-  }
+}

@@ -15,7 +15,7 @@ router.post("/", async (req, res) => {
 
     const expected = crypto
       .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(req.body) // 🔥 RAW BODY
+      .update(req.body) // 🔥 RAW BODY REQUIRED
       .digest("hex");
 
     if (signature !== expected) {
@@ -25,24 +25,29 @@ router.post("/", async (req, res) => {
     const payload = JSON.parse(req.body.toString());
     const event = payload.event;
 
+    // ✅ PAYMENT SUCCESS
     if (event === "invoice.paid") {
-      const subId =
-        payload.payload.invoice.entity.subscription_id;
+      const invoice = payload.payload.invoice.entity;
 
       await supabase
         .from("subscriptions")
-        .update({ status: "active" })
-        .eq("razorpay_subscription_id", subId);
+        .update({
+          status: "active",
+          razorpay_payment_id: invoice.payment_id
+        })
+        .eq("razorpay_subscription_id", invoice.subscription_id);
     }
 
+    // ❌ PAYMENT FAILED / AUTO-DEBIT FAILED
     if (event === "invoice.payment_failed") {
-      const subId =
-        payload.payload.invoice.entity.subscription_id;
+      const invoice = payload.payload.invoice.entity;
 
       await supabase
         .from("subscriptions")
-        .update({ status: "expired" })
-        .eq("razorpay_subscription_id", subId);
+        .update({
+          status: "expired"
+        })
+        .eq("razorpay_subscription_id", invoice.subscription_id);
     }
 
     res.json({ success: true });

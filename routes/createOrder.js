@@ -15,9 +15,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-/* =========================
-   CREATE ORDER (DIRECT PAY)
-   ========================= */
+/* 🧾 CREATE ORDER */
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
@@ -31,7 +29,7 @@ router.post("/", async (req, res) => {
     const order = await razorpay.orders.create({
       amount: app.price * 100,
       currency: "INR",
-      receipt: `order_${Date.now()}`
+      receipt: `rcpt_${Date.now()}`
     });
 
     await supabase.from("subscriptions").insert({
@@ -39,8 +37,7 @@ router.post("/", async (req, res) => {
       app_id,
       status: "pending",
       amount: app.price,
-      razorpay_order_id: order.id,
-      payment_type: "direct"
+      razorpay_order_id: order.id
     });
 
     res.json({
@@ -50,13 +47,12 @@ router.post("/", async (req, res) => {
     });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Order create failed" });
   }
 });
 
-/* =========================
-   VERIFY DIRECT PAYMENT
-   ========================= */
+/* ✅ VERIFY PAYMENT */
 router.post("/verify", async (req, res) => {
   try {
     const {
@@ -74,25 +70,23 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    /* 📆 1 YEAR VALIDITY */
-    const start = new Date();
-    const end = new Date();
-    end.setFullYear(end.getFullYear() + 1);
-
     await supabase
       .from("subscriptions")
       .update({
         status: "active",
         razorpay_payment_id,
-        start_date: start.toISOString(),
-        end_date: end.toISOString()
+        start_date: new Date().toISOString(),
+        end_date: new Date(
+          Date.now() + 365 * 24 * 60 * 60 * 1000
+        ).toISOString()
       })
       .eq("razorpay_order_id", razorpay_order_id);
 
     res.json({ success: true });
 
   } catch (err) {
-    res.status(500).json({ error: "Verify failed" });
+    console.error(err);
+    res.status(500).json({ error: "Verification failed" });
   }
 });
 

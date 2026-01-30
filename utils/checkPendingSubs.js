@@ -13,15 +13,12 @@ const supabase = createClient(
 
 export async function checkPendingSubscriptions() {
   try {
-    const { data: subs, error } = await supabase
+    const { data: subs } = await supabase
       .from("subscriptions")
       .select("*")
       .eq("status", "pending");
 
-    if (error || !subs || subs.length === 0) {
-      console.log("ℹ️ No pending subscriptions");
-      return;
-    }
+    if (!subs || subs.length === 0) return;
 
     for (const sub of subs) {
       try {
@@ -29,14 +26,10 @@ export async function checkPendingSubscriptions() {
           sub.razorpay_subscription_id
         );
 
-        console.log(
-          "🔎 Razorpay status:",
-          sub.razorpay_subscription_id,
-          rpSub.status
-        );
+        console.log("🔎 Razorpay status:", rpSub.status);
 
-        // ✅ IMPORTANT FIX
-        if (rpSub.status === "active" || rpSub.status === "authenticated") {
+        // 🔥 ONLY AUTHENTICATED → TRIAL
+        if (rpSub.status === "authenticated") {
           await supabase
             .from("subscriptions")
             .update({
@@ -45,7 +38,7 @@ export async function checkPendingSubscriptions() {
             })
             .eq("id", sub.id);
 
-          console.log("✅ Trial started for:", sub.id);
+          console.log("✅ Trial started (backup):", sub.id);
         }
       } catch (e) {
         console.log("⏭️ Skipped:", sub.razorpay_subscription_id);

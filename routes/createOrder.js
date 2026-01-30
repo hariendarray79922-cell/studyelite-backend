@@ -20,11 +20,15 @@ router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
 
-    const { data: app } = await supabase
+    const { data: app, error } = await supabase
       .from("apps")
       .select("*")
       .eq("id", app_id)
       .single();
+
+    if (error || !app) {
+      return res.status(400).json({ error: "App not found" });
+    }
 
     const order = await razorpay.orders.create({
       amount: app.price * 100,
@@ -32,6 +36,7 @@ router.post("/", async (req, res) => {
       receipt: `order_${Date.now()}`
     });
 
+    // ✅ VERY IMPORTANT: order_id save ho raha hai
     await supabase.from("subscriptions").insert({
       user_id,
       app_id,
@@ -45,7 +50,9 @@ router.post("/", async (req, res) => {
       order_id: order.id,
       amount: order.amount
     });
+
   } catch (err) {
+    console.error("Create order error:", err);
     res.status(500).json({ error: "Order create failed" });
   }
 });
@@ -59,6 +66,7 @@ router.post("/verify", async (req, res) => {
       razorpay_signature
     } = req.body;
 
+    // 🔐 Signature verify
     const sign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + "|" + razorpay_payment_id)
@@ -68,21 +76,38 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    /* 💰 PAYMENT CONFIRMED → ACTIVE 1 YEAR */
-    await supabase
+    // 📅 Date fix (Supabase DATE type)
+    const start = new Date();
+    const end = new Date();
+    end.setFullYear(end.getFullYear() + 1);
+
+    const { data, error } = await supabase
       .from("subscriptions")
       .update({
         status: "active",
         razorpay_payment_id,
-        start_date: new Date().toISOString(),
-        end_date: new Date(
-          Date.now() + 365 * 24 * 60 * 60 * 1000
-        ).toISOString()
+        start_date: start.toISOString().slice(0, 10),
+        end_date: end.toISOString().slice(0, 10)
       })
-      .eq("razorpay_order_id", razorpay_order_id);
+      .eq("razorpay_order_id", razorpay_order_id)
+      .select();
+
+    // 🚨 MOST IMPORTANT LOG
+    if (error) {
+      console.error("❌ DB UPDATE FAILED:", error);
+      return res.status(500).json({ error: "DB update failed" });
+    }
+
+    if (!data || data.length === 0) {
+      console.error("⚠️ NO ROW MATCHED ORDER ID:", razorpay_order_id);
+    }
+
+    console.log("✅ DIRECT PAYMENT ACTIVE:", razorpay_payment_id);
 
     res.json({ success: true });
+
   } catch (err) {
+    console.error("Verify error:", err);
     res.status(500).json({ error: "Verify failed" });
   }
 });

@@ -27,7 +27,7 @@ export default async function webhook(req, res) {
 
     console.log("📩 Webhook:", event);
 
-    /* 🔑 AUTOPAY APPROVED → TRIAL */
+    /* ✅ AUTOPAY APPROVED → TRIAL START */
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
 
@@ -58,21 +58,32 @@ export default async function webhook(req, res) {
         })
         .eq("razorpay_subscription_id", payment.subscription_id);
 
-      console.log("💰 Payment success → active");
+      console.log("💰 Payment success → ACTIVE");
     }
 
-    /* ❌ AUTOPAY CANCEL DURING TRIAL */
+    /* 🚫 AUTOPAY CANCEL */
     if (event === "subscription.cancelled") {
       const sub = payload.payload.subscription.entity;
 
-      await supabase
+      // check: payment hua ya nahi
+      const { data } = await supabase
         .from("subscriptions")
-        .update({
-          status: "trial_cancelled"
-        })
-        .eq("razorpay_subscription_id", sub.id);
+        .select("razorpay_payment_id")
+        .eq("razorpay_subscription_id", sub.id)
+        .single();
 
-      console.log("🚫 Autopay cancelled during trial");
+      // ❌ payment nahi hua → trial cancelled
+      if (!data?.razorpay_payment_id) {
+        await supabase
+          .from("subscriptions")
+          .update({ status: "trial_cancelled" })
+          .eq("razorpay_subscription_id", sub.id);
+
+        console.log("🚫 Trial cancelled (no payment)");
+      } else {
+        // ✅ payment ho chuka → ACTIVE rahega
+        console.log("ℹ️ Autopay cancelled but paid user → access till end_date");
+      }
     }
 
     res.json({ success: true });

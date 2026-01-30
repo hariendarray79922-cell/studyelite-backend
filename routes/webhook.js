@@ -9,11 +9,7 @@ const supabase = createClient(
 export default async function webhook(req, res) {
   try {
     const signature = req.headers["x-razorpay-signature"];
-
-    if (!signature) {
-      console.log("❌ No signature header");
-      return res.status(400).send("No signature");
-    }
+    if (!signature) return res.status(400).send("No signature");
 
     const body = req.body.toString("utf8");
 
@@ -22,11 +18,12 @@ export default async function webhook(req, res) {
       .update(body)
       .digest("hex");
 
-    if (!crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected)
-    )) {
-      console.log("❌ Invalid signature");
+    if (
+      !crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(expected)
+      )
+    ) {
       return res.status(400).send("Invalid signature");
     }
 
@@ -35,7 +32,22 @@ export default async function webhook(req, res) {
 
     console.log("✅ Webhook received:", event);
 
-    /* 🔓 SUBSCRIPTION ACTIVATED */
+    /* ✅ AUTHENTICATED = START TRIAL */
+    if (event === "subscription.authenticated") {
+      const sub = payload.payload.subscription.entity;
+
+      await supabase
+        .from("subscriptions")
+        .update({
+          status: "trial",
+          start_date: new Date().toISOString()
+        })
+        .eq("razorpay_subscription_id", sub.id);
+
+      console.log("✅ Authenticated → trial started:", sub.id);
+    }
+
+    /* ✅ ACTIVE */
     if (event === "subscription.activated") {
       const sub = payload.payload.subscription.entity;
 
@@ -50,7 +62,7 @@ export default async function webhook(req, res) {
       console.log("✅ Subscription activated:", sub.id);
     }
 
-    /* 💰 PAYMENT CAPTURED */
+    /* 💰 PAYMENT */
     if (event === "payment.captured") {
       const payment = payload.payload.payment.entity;
 
@@ -62,20 +74,6 @@ export default async function webhook(req, res) {
         .eq("razorpay_subscription_id", payment.subscription_id);
 
       console.log("✅ Payment saved:", payment.id);
-    }
-
-    /* ❌ PAYMENT FAILED */
-    if (event === "invoice.payment_failed") {
-      const invoice = payload.payload.invoice.entity;
-
-      await supabase
-        .from("subscriptions")
-        .update({
-          status: "expired"
-        })
-        .eq("razorpay_subscription_id", invoice.subscription_id);
-
-      console.log("❌ Payment failed:", invoice.subscription_id);
     }
 
     res.json({ success: true });

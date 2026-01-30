@@ -27,6 +27,7 @@ export async function checkPendingSubscriptions() {
 
       console.log("🔎 Razorpay:", rpSub.status);
 
+      /* ✅ AUTHENTICATED → TRIAL */
       if (rpSub.status === "authenticated") {
         await supabase
           .from("subscriptions")
@@ -39,7 +40,8 @@ export async function checkPendingSubscriptions() {
         console.log("✅ Trial started (backup)");
       }
 
-      if (rpSub.status === "cancelled") {
+      /* 🚫 CANCELLED → ONLY IF NO PAYMENT */
+      if (rpSub.status === "cancelled" && !sub.razorpay_payment_id) {
         await supabase
           .from("subscriptions")
           .update({ status: "trial_cancelled" })

@@ -29,13 +29,13 @@ router.post("/", async (req, res) => {
     const order = await razorpay.orders.create({
       amount: app.price * 100,
       currency: "INR",
-      receipt: `rcpt_${Date.now()}`
+      receipt: `order_${Date.now()}`
     });
 
     await supabase.from("subscriptions").insert({
       user_id,
       app_id,
-      status: "pending",
+      status: "pending_direct",
       amount: app.price,
       razorpay_order_id: order.id
     });
@@ -45,9 +45,7 @@ router.post("/", async (req, res) => {
       order_id: order.id,
       amount: order.amount
     });
-
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Order create failed" });
   }
 });
@@ -70,6 +68,7 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
+    /* 💰 PAYMENT CONFIRMED → ACTIVE 1 YEAR */
     await supabase
       .from("subscriptions")
       .update({
@@ -83,10 +82,8 @@ router.post("/verify", async (req, res) => {
       .eq("razorpay_order_id", razorpay_order_id);
 
     res.json({ success: true });
-
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Verification failed" });
+    res.status(500).json({ error: "Verify failed" });
   }
 });
 

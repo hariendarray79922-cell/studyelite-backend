@@ -13,41 +13,73 @@ const supabase = createClient(
 
 export async function checkPendingSubscriptions() {
   try {
-    const { data: subs } = await supabase
+    // 🔥 IMPORTANT: pending + trial dono check honge
+    const { data: subs, error } = await supabase
       .from("subscriptions")
       .select("*")
-      .eq("status", "pending");
+      .in("status", ["pending", "trial"]);
 
-    if (!subs || subs.length === 0) return;
+    if (error || !subs || subs.length === 0) {
+      console.log("ℹ️ No pending / trial subscriptions");
+      return;
+    }
 
     for (const sub of subs) {
-      const rpSub = await razorpay.subscriptions.fetch(
-        sub.razorpay_subscription_id
-      );
+      try {
+        const rpSub = await razorpay.subscriptions.fetch(
+          sub.razorpay_subscription_id
+        );
 
-      console.log("🔎 Razorpay:", rpSub.status);
+        console.log(
+          "🔎 Razorpay:",
+          sub.razorpay_subscription_id,
+          rpSub.status
+        );
 
-      /* ✅ AUTHENTICATED → TRIAL */
-      if (rpSub.status === "authenticated") {
-        await supabase
-          .from("subscriptions")
-          .update({
-            status: "trial",
-            start_date: new Date().toISOString()
-          })
-          .eq("id", sub.id);
+        /* ✅ AUTOPAY APPROVED → TRIAL START */
+        if (
+          sub.status === "pending" &&
+          rpSub.status === "authenticated"
+        ) {
+          await supabase
+            .from("subscriptions")
+            .update({
+              status: "trial",
+              start_date: new Date().toISOString()
+            })
+            .eq("id", sub.id);
 
-        console.log("✅ Trial started (backup)");
-      }
+          console.log("✅ Trial started:", sub.id);
+        }
 
-      /* 🚫 CANCELLED → ONLY IF NO PAYMENT */
-      if (rpSub.status === "cancelled" && !sub.razorpay_payment_id) {
-        await supabase
-          .from("subscriptions")
-          .update({ status: "trial_cancelled" })
-          .eq("id", sub.id);
+        /* 🚫 TRIAL + AUTOPAY CANCELLED → ACCESS REMOVE */
+        if (
+          sub.status === "trial" &&
+          rpSub.status === "cancelled" &&
+          !sub.razorpay_payment_id
+        ) {
+          await supabase
+            .from("subscriptions")
+            .update({
+              status: "trial_cancelled"
+            })
+            .eq("id", sub.id);
 
-        console.log("🚫 Trial cancelled (backup)");
+          console.log("🚫 Trial revoked (autopay cancelled):", sub.id);
+        }
+
+        /* ℹ️ PAID USER → IGNORE CANCEL */
+        if (
+          rpSub.status === "cancelled" &&
+          sub.razorpay_payment_id
+        ) {
+          console.log(
+            "ℹ️ Paid user cancelled autopay → access till end_date"
+          );
+        }
+
+      } catch (e) {
+        console.log("⏭️ Skipped:", sub.razorpay_subscription_id);
       }
     }
   } catch (err) {

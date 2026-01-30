@@ -21,27 +21,31 @@ export async function checkPendingSubscriptions() {
     if (!subs || subs.length === 0) return;
 
     for (const sub of subs) {
-      try {
-        const rpSub = await razorpay.subscriptions.fetch(
-          sub.razorpay_subscription_id
-        );
+      const rpSub = await razorpay.subscriptions.fetch(
+        sub.razorpay_subscription_id
+      );
 
-        console.log("🔎 Razorpay status:", rpSub.status);
+      console.log("🔎 Razorpay:", rpSub.status);
 
-        // 🔥 ONLY AUTHENTICATED → TRIAL
-        if (rpSub.status === "authenticated") {
-          await supabase
-            .from("subscriptions")
-            .update({
-              status: "trial",
-              start_date: new Date().toISOString()
-            })
-            .eq("id", sub.id);
+      if (rpSub.status === "authenticated") {
+        await supabase
+          .from("subscriptions")
+          .update({
+            status: "trial",
+            start_date: new Date().toISOString()
+          })
+          .eq("id", sub.id);
 
-          console.log("✅ Trial started (backup):", sub.id);
-        }
-      } catch (e) {
-        console.log("⏭️ Skipped:", sub.razorpay_subscription_id);
+        console.log("✅ Trial started (backup)");
+      }
+
+      if (rpSub.status === "cancelled") {
+        await supabase
+          .from("subscriptions")
+          .update({ status: "trial_cancelled" })
+          .eq("id", sub.id);
+
+        console.log("🚫 Trial cancelled (backup)");
       }
     }
   } catch (err) {

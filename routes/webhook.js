@@ -32,7 +32,7 @@ export default async function webhook(req, res) {
 
     console.log("✅ Webhook received:", event);
 
-    /* ✅ AUTHENTICATED = START TRIAL */
+    // 🔐 AUTHENTICATED = TRIAL START
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
 
@@ -44,25 +44,30 @@ export default async function webhook(req, res) {
         })
         .eq("razorpay_subscription_id", sub.id);
 
-      console.log("✅ Authenticated → trial started:", sub.id);
+      console.log("🟡 Trial started:", sub.id);
     }
 
-    /* ✅ ACTIVE */
+    // 🔒 PAYMENT DONE = ACTIVE FOR 1 YEAR
     if (event === "subscription.activated") {
       const sub = payload.payload.subscription.entity;
+
+      const start = new Date();
+      const end = new Date();
+      end.setFullYear(end.getFullYear() + 1);
 
       await supabase
         .from("subscriptions")
         .update({
           status: "active",
-          start_date: new Date().toISOString()
+          start_date: start.toISOString(),
+          end_date: end.toISOString()
         })
         .eq("razorpay_subscription_id", sub.id);
 
-      console.log("✅ Subscription activated:", sub.id);
+      console.log("🔒 Active till:", end.toISOString());
     }
 
-    /* 💰 PAYMENT */
+    // 💰 PAYMENT ID SAVE
     if (event === "payment.captured") {
       const payment = payload.payload.payment.entity;
 
@@ -73,7 +78,7 @@ export default async function webhook(req, res) {
         })
         .eq("razorpay_subscription_id", payment.subscription_id);
 
-      console.log("✅ Payment saved:", payment.id);
+      console.log("💰 Payment saved:", payment.id);
     }
 
     res.json({ success: true });

@@ -18,7 +18,10 @@ export async function checkPendingSubscriptions() {
       .select("*")
       .eq("status", "pending");
 
-    if (error || !subs) return;
+    if (error || !subs || subs.length === 0) {
+      console.log("ℹ️ No pending subscriptions");
+      return;
+    }
 
     for (const sub of subs) {
       try {
@@ -26,7 +29,14 @@ export async function checkPendingSubscriptions() {
           sub.razorpay_subscription_id
         );
 
-        if (rpSub.status === "active") {
+        console.log(
+          "🔎 Razorpay status:",
+          sub.razorpay_subscription_id,
+          rpSub.status
+        );
+
+        // ✅ IMPORTANT FIX
+        if (rpSub.status === "active" || rpSub.status === "authenticated") {
           await supabase
             .from("subscriptions")
             .update({
@@ -35,13 +45,13 @@ export async function checkPendingSubscriptions() {
             })
             .eq("id", sub.id);
 
-          console.log("✅ Subscription activated:", sub.id);
+          console.log("✅ Trial started for:", sub.id);
         }
       } catch (e) {
-        console.log("⏭️ Skipped:", sub.id);
+        console.log("⏭️ Skipped:", sub.razorpay_subscription_id);
       }
     }
   } catch (err) {
-    console.log("Checker error:", err.message);
+    console.log("🔥 Checker error:", err.message);
   }
 }

@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import nodemailer from "nodemailer";
 
 import createSubscription from "./routes/createSubscription.js";
 import createOrder from "./routes/createOrder.js";
@@ -21,6 +22,63 @@ app.use(
 
 app.use(express.json());
 
+/* ================= OTP SYSTEM (ADDED) ================= */
+
+const otpStore = {};
+
+/* SEND EMAIL OTP */
+app.post("/send-email-otp", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) return res.json({ success: false });
+
+  const otp = Math.floor(1000 + Math.random() * 9000);
+  otpStore[email] = otp;
+
+  console.log("OTP 👉", otp);
+
+  try {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL,
+        pass: process.env.PASS
+      }
+    });
+
+    await transporter.sendMail({
+      from: `"StudyElite" <${process.env.EMAIL}>`,
+      to: email,
+      subject: "Your OTP Code",
+      html: `
+        <h2>Your OTP Code</h2>
+        <p>Use this code to login:</p>
+        <h1 style="letter-spacing:5px;">${otp}</h1>
+      `
+    });
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.log("MAIL ERROR:", err.message);
+    res.json({ success: false });
+  }
+});
+
+/* VERIFY OTP */
+app.post("/verify-email-otp", (req, res) => {
+  const { email, otp } = req.body;
+
+  if (otpStore[email] == otp) {
+    delete otpStore[email];
+    return res.json({ success: true });
+  }
+
+  res.json({ success: false });
+});
+
+/* ================= EXISTING ROUTES ================= */
+
 app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
 });
@@ -35,6 +93,8 @@ app.use("/create-order", createOrder);
 setInterval(() => {
   checkPendingSubscriptions();
 }, 60 * 1000);
+
+/* ================= START ================= */
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {

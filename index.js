@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import fetch from "node-fetch";
 
 import createSubscription from "./routes/createSubscription.js";
 import createOrder from "./routes/createOrder.js";
@@ -22,21 +23,27 @@ app.use(
 
 app.use(express.json());
 
-/* ================= OTP SYSTEM (ADDED) ================= */
+/* ================= OTP SYSTEM ================= */
 
 const otpStore = {};
 
-/* SEND EMAIL OTP */
-app.post("/send-email-otp", async (req, res) => {
-  const { email } = req.body;
+/* 🔥 HYBRID OTP (EMAIL + SMS) */
+app.post("/send-otp-hybrid", async (req, res) => {
+  const { email, phone } = req.body;
 
-  if (!email) return res.json({ success: false });
+  if (!email || !phone) {
+    return res.json({ success: false });
+  }
 
-  const otp = Math.floor(1000 + Math.random() * 9000);
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
   otpStore[email] = otp;
 
   console.log("OTP 👉", otp);
 
+  let emailStatus = false;
+  let smsStatus = false;
+
+  /* 📩 EMAIL */
   try {
     const transporter = nodemailer.createTransport({
       service: "gmail",
@@ -52,17 +59,40 @@ app.post("/send-email-otp", async (req, res) => {
       subject: "Your OTP Code",
       html: `
         <h2>Your OTP Code</h2>
-        <p>Use this code to login:</p>
         <h1 style="letter-spacing:5px;">${otp}</h1>
       `
     });
 
-    res.json({ success: true });
+    emailStatus = true;
 
   } catch (err) {
     console.log("MAIL ERROR:", err.message);
-    res.json({ success: false });
   }
+
+  /* 📱 SMS (Termux) */
+  try {
+    await fetch("https://sms.studyelite.shop/send-sms", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        number: phone,
+        message: `Your OTP is ${otp}`
+      })
+    });
+
+    smsStatus = true;
+
+  } catch (err) {
+    console.log("SMS ERROR:", err.message);
+  }
+
+  res.json({
+    success: emailStatus || smsStatus,
+    email: emailStatus,
+    sms: smsStatus
+  });
 });
 
 /* VERIFY OTP */
@@ -83,13 +113,9 @@ app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
 });
 
-/* 🧪 Trial + Autopay */
 app.use("/create-subscription", createSubscription);
-
-/* 💳 Direct Payment (1 Year) */
 app.use("/create-order", createOrder);
 
-/* 🔁 Backup checker */
 setInterval(() => {
   checkPendingSubscriptions();
 }, 60 * 1000);

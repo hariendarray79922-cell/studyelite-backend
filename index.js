@@ -46,33 +46,36 @@ app.post("/send-otp", async (req, res) => {
   let emailOk = false;
 
   /* ================= SMS FIRST ================= */
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+try {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
 
-    const smsRes = await fetch("https://sms.studyelite.shop/send-sms-otp", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ phone }),
-      signal: controller.signal
-    });
+  const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      number: phone,
+      message: `Your OTP is ${otp}`
+    }),
+    signal: controller.signal
+  });
 
-    clearTimeout(timeout);
+  clearTimeout(timeout);
 
-    const smsData = await smsRes.json();
+  const smsData = await smsRes.json();
 
-    if (smsRes.ok && smsData.success) {
-      smsOk = true;
-      console.log("SMS SENT ✅");
-    } else {
-      console.log("SMS FAILED ❌");
-    }
-
-  } catch (err) {
-    console.log("SMS ERROR ❌", err.message);
+  if (smsRes.ok && smsData.success) {
+    smsOk = true;
+    console.log("SMS SENT ✅");
+  } else {
+    console.log("SMS FAILED ❌");
   }
+
+} catch (err) {
+  console.log("SMS ERROR ❌", err.message);
+}
 
   /* ================= EMAIL FALLBACK ================= */
   if (!smsOk && email) {

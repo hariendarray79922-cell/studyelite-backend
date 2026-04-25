@@ -70,23 +70,30 @@ app.post("/send-otp", async (req, res) => {
   }
 
   /* 📱 SMS (Termux via otp.shop) */
-  try {
-    await fetch("https://sms.studyelite.shop/send-sms", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        number: phone,
-        message: `Your OTP is ${otp}`
-      })
-    });
+try {
+  const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      number: phone,
+      message: `Your OTP is ${otp}`
+    })
+  });
 
+  const smsData = await smsRes.json();
+
+  if (smsRes.ok && smsData.success) {
     smsOk = true;
-
-  } catch (err) {
-    console.log("SMS ERROR:", err.message);
+    console.log("SMS SENT ✅");
+  } else {
+    console.log("SMS FAILED ❌", smsData);
   }
+
+} catch (err) {
+  console.log("SMS ERROR ❌", err.message);
+}
 
   res.json({
     success: emailOk || smsOk,

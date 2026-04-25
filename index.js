@@ -27,8 +27,8 @@ app.use(express.json());
 
 const otpStore = {};
 
-/* 🔥 HYBRID OTP (EMAIL + SMS) */
-app.post("/send-otp-hybrid", async (req, res) => {
+/* 🔥 EMAIL + SMS OTP (FINAL) */
+app.post("/send-otp", async (req, res) => {
   const { email, phone } = req.body;
 
   if (!email || !phone) {
@@ -36,12 +36,15 @@ app.post("/send-otp-hybrid", async (req, res) => {
   }
 
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+  // store both
   otpStore[email] = otp;
+  otpStore[phone] = otp;
 
   console.log("OTP 👉", otp);
 
-  let emailStatus = false;
-  let smsStatus = false;
+  let emailOk = false;
+  let smsOk = false;
 
   /* 📩 EMAIL */
   try {
@@ -57,19 +60,16 @@ app.post("/send-otp-hybrid", async (req, res) => {
       from: `"StudyElite" <${process.env.EMAIL}>`,
       to: email,
       subject: "Your OTP Code",
-      html: `
-        <h2>Your OTP Code</h2>
-        <h1 style="letter-spacing:5px;">${otp}</h1>
-      `
+      html: `<h1>${otp}</h1>`
     });
 
-    emailStatus = true;
+    emailOk = true;
 
   } catch (err) {
     console.log("MAIL ERROR:", err.message);
   }
 
-  /* 📱 SMS (Termux) */
+  /* 📱 SMS (Termux via otp.shop) */
   try {
     await fetch("https://sms.studyelite.shop/send-sms", {
       method: "POST",
@@ -82,25 +82,30 @@ app.post("/send-otp-hybrid", async (req, res) => {
       })
     });
 
-    smsStatus = true;
+    smsOk = true;
 
   } catch (err) {
     console.log("SMS ERROR:", err.message);
   }
 
   res.json({
-    success: emailStatus || smsStatus,
-    email: emailStatus,
-    sms: smsStatus
+    success: emailOk || smsOk,
+    email: emailOk,
+    sms: smsOk
   });
 });
 
-/* VERIFY OTP */
-app.post("/verify-email-otp", (req, res) => {
-  const { email, otp } = req.body;
+/* 🔥 VERIFY OTP (FIXED) */
+app.post("/verify-otp", (req, res) => {
+  const { email, phone, otp } = req.body;
 
-  if (otpStore[email] == otp) {
+  if (
+    otpStore[email] == otp ||
+    otpStore[phone] == otp
+  ) {
     delete otpStore[email];
+    delete otpStore[phone];
+
     return res.json({ success: true });
   }
 
@@ -113,9 +118,13 @@ app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
 });
 
+/* 🧪 Trial + Autopay */
 app.use("/create-subscription", createSubscription);
+
+/* 💳 Direct Payment */
 app.use("/create-order", createOrder);
 
+/* 🔁 Backup checker */
 setInterval(() => {
   checkPendingSubscriptions();
 }, 60 * 1000);

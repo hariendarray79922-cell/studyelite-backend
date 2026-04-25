@@ -27,91 +27,96 @@ app.use(express.json());
 
 const otpStore = {};
 
-/* 🔥 EMAIL + SMS OTP (FINAL) */
+/* 🔥 SEND OTP (SMS FIRST + EMAIL FALLBACK) */
 app.post("/send-otp", async (req, res) => {
   const { email, phone } = req.body;
 
-  if (!email || !phone) {
+  if (!phone && !email) {
     return res.json({ success: false });
   }
 
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-  // store both
-  otpStore[email] = otp;
-  otpStore[phone] = otp;
+  if (email) otpStore[email] = otp;
+  if (phone) otpStore[phone] = otp;
 
   console.log("OTP 👉", otp);
 
-  let emailOk = false;
   let smsOk = false;
+  let emailOk = false;
 
-  /* 📩 EMAIL */
+  /* ================= SMS FIRST ================= */
   try {
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL,
-        pass: process.env.PASS
-      }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
+    const smsRes = await fetch("https://sms.studyelite.shop/send-sms-otp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ phone }),
+      signal: controller.signal
     });
 
-    await transporter.sendMail({
-      from: `"StudyElite" <${process.env.EMAIL}>`,
-      to: email,
-      subject: "Your OTP Code",
-      html: `<h1>${otp}</h1>`
-    });
+    clearTimeout(timeout);
 
-    emailOk = true;
+    const smsData = await smsRes.json();
+
+    if (smsRes.ok && smsData.success) {
+      smsOk = true;
+      console.log("SMS SENT ✅");
+    } else {
+      console.log("SMS FAILED ❌");
+    }
 
   } catch (err) {
-    console.log("MAIL ERROR:", err.message);
+    console.log("SMS ERROR ❌", err.message);
   }
 
-  /* 📱 SMS (Termux via otp.shop) */
-try {
-  const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      number: phone,
-      message: `Your OTP is ${otp}`
-    })
-  });
+  /* ================= EMAIL FALLBACK ================= */
+  if (!smsOk && email) {
+    try {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: process.env.EMAIL,
+          pass: process.env.PASS
+        }
+      });
 
-  const smsData = await smsRes.json();
+      await transporter.sendMail({
+        from: `"StudyElite" <${process.env.EMAIL}>`,
+        to: email,
+        subject: "Your OTP Code",
+        html: `<h1>${otp}</h1>`
+      });
 
-  if (smsRes.ok && smsData.success) {
-    smsOk = true;
-    console.log("SMS SENT ✅");
-  } else {
-    console.log("SMS FAILED ❌", smsData);
+      emailOk = true;
+      console.log("EMAIL SENT ✅");
+
+    } catch (err) {
+      console.log("MAIL ERROR ❌", err.message);
+    }
   }
-
-} catch (err) {
-  console.log("SMS ERROR ❌", err.message);
-}
 
   res.json({
-    success: emailOk || smsOk,
-    email: emailOk,
-    sms: smsOk
+    success: smsOk || emailOk,
+    sms: smsOk,
+    email: emailOk
   });
 });
 
-/* 🔥 VERIFY OTP (FIXED) */
+/* 🔥 VERIFY OTP */
 app.post("/verify-otp", (req, res) => {
   const { email, phone, otp } = req.body;
 
   if (
-    otpStore[email] == otp ||
-    otpStore[phone] == otp
+    (email && otpStore[email] == otp) ||
+    (phone && otpStore[phone] == otp)
   ) {
-    delete otpStore[email];
-    delete otpStore[phone];
+    if (email) delete otpStore[email];
+    if (phone) delete otpStore[phone];
 
     return res.json({ success: true });
   }

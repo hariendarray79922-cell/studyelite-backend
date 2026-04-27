@@ -22,15 +22,14 @@ router.post("/", async (req, res) => {
       .eq("id", app_id)
       .single();
 
-    if (appError) {
-      console.error("❌ App fetch error:", appError);
-      return res.status(404).json({ error: "App not found", details: appError });
+    if (appError || !app) {
+      return res.status(404).json({ error: "App not found" });
     }
 
     console.log("✅ App found:", app.app_name);
 
     // 2. Check existing active subscription
-    const { data: activeSub, error: checkError } = await supabaseAdmin
+    const { data: activeSub } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
       .eq("user_id", user_id)
@@ -45,12 +44,15 @@ router.post("/", async (req, res) => {
     const TRIAL_AMOUNT = 2;
     const trialDays = app.trial_days || 7;
 
-    // 3. Create Razorpay subscription
+    // 3. 🔥 FIX: start_at should be FUTURE time (current time + 5 minutes)
+    const startAt = Math.floor(Date.now() / 1000) + 300; // 5 minutes from now
+
+    // Create Razorpay subscription
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
       total_count: 1,
-      start_at: Math.floor(Date.now() / 1000),
+      start_at: startAt,  // ✅ FUTURE time
       addons: [
         {
           item: {
@@ -64,17 +66,13 @@ router.post("/", async (req, res) => {
 
     console.log("✅ Razorpay subscription created:", subscription.id);
 
-    // 4. 🔥 CRITICAL: INSERT into database with proper error handling
-    const { data: existingRow, error: findError } = await supabaseAdmin
+    // 4. 🔥 FIX: Remove updated_at column (since it doesn't exist)
+    const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
       .eq("user_id", user_id)
       .eq("app_id", app_id)
       .maybeSingle();
-
-    if (findError) {
-      console.error("❌ Find error:", findError);
-    }
 
     let dbResult;
     if (existingRow) {
@@ -84,11 +82,10 @@ router.post("/", async (req, res) => {
         .update({
           status: "pending",
           amount: TRIAL_AMOUNT,
-          razorpay_subscription_id: subscription.id,
-          updated_at: new Date()
+          razorpay_subscription_id: subscription.id
+          // ❌ REMOVED: updated_at: new Date()
         })
-        .eq("id", existingRow.id)
-        .select();
+        .eq("id", existingRow.id);
     } else {
       console.log("🆕 Inserting new row for user:", user_id);
       dbResult = await supabaseAdmin
@@ -98,11 +95,9 @@ router.post("/", async (req, res) => {
           app_id: app_id,
           status: "pending",
           amount: TRIAL_AMOUNT,
-          razorpay_subscription_id: subscription.id,
-          created_at: new Date(),
-          updated_at: new Date()
-        })
-        .select();
+          razorpay_subscription_id: subscription.id
+          // ❌ REMOVED: created_at, updated_at (database will handle defaults)
+        });
     }
 
     if (dbResult.error) {
@@ -110,7 +105,7 @@ router.post("/", async (req, res) => {
       return res.status(500).json({ error: "Database insert failed", details: dbResult.error });
     }
 
-    console.log("✅ Database row created/updated:", dbResult.data?.[0]?.id);
+    console.log("✅ Database row created/updated");
 
     res.json({
       success: true,
@@ -122,7 +117,7 @@ router.post("/", async (req, res) => {
 
   } catch (err) {
     console.error("🔥 Create subscription error:", err);
-    res.status(500).json({ error: err.message, stack: err.stack });
+    res.status(500).json({ error: err.message });
   }
 });
 

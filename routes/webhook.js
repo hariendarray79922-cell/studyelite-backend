@@ -1,18 +1,15 @@
 import crypto from "crypto";
-import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+let supabaseAdmin = null;
 
 export default async function webhook(req, res) {
   try {
+    supabaseAdmin = req.app.locals.supabaseAdmin;
+    
     const signature = req.headers["x-razorpay-signature"];
     if (!signature) return res.status(400).send("No signature");
 
     const body = req.body.toString("utf8");
-
     const expected = crypto
       .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
       .update(body)
@@ -24,65 +21,60 @@ export default async function webhook(req, res) {
 
     const payload = JSON.parse(body);
     const event = payload.event;
-
     console.log("📩 Webhook:", event);
 
-    /* ✅ AUTOPAY APPROVED → TRIAL START */
+    /* ✅ AUTOPAY APPROVED → pending → trial */
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
-
-      await supabase
+      
+      await supabaseAdmin
         .from("subscriptions")
         .update({
           status: "trial",
-          start_date: new Date().toISOString()
+          start_date: new Date().toISOString().split('T')[0],
+          end_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          updated_at: new Date()
         })
-        .eq("razorpay_subscription_id", sub.id);
+        .eq("razorpay_subscription_id", sub.id)
+        .eq("status", "pending");
 
       console.log("✅ Trial started:", sub.id);
     }
 
-    /* 💰 PAYMENT SUCCESS → ACTIVE */
+    /* 💰 PAYMENT CAPTURED → trial → active */
     if (event === "payment.captured") {
       const payment = payload.payload.payment.entity;
-
-      await supabase
+      
+      await supabaseAdmin
         .from("subscriptions")
         .update({
           status: "active",
           razorpay_payment_id: payment.id,
-          start_date: new Date().toISOString(),
-          end_date: new Date(
-            Date.now() + 365 * 24 * 60 * 60 * 1000
-          ).toISOString()
+          updated_at: new Date()
         })
         .eq("razorpay_subscription_id", payment.subscription_id);
 
-      console.log("💰 Payment success → ACTIVE");
+      console.log("💰 Payment captured → ACTIVE:", payment.id);
     }
 
-    /* 🚫 AUTOPAY CANCEL */
+    /* 🚫 SUBSCRIPTION CANCELLED */
     if (event === "subscription.cancelled") {
       const sub = payload.payload.subscription.entity;
-
-      // check: payment hua ya nahi
-      const { data } = await supabase
+      
+      const { data } = await supabaseAdmin
         .from("subscriptions")
         .select("razorpay_payment_id")
         .eq("razorpay_subscription_id", sub.id)
         .single();
 
-      // ❌ payment nahi hua → trial cancelled
       if (!data?.razorpay_payment_id) {
-        await supabase
+        await supabaseAdmin
           .from("subscriptions")
-          .update({ status: "trial_cancelled" })
+          .update({ status: "trial_cancelled", updated_at: new Date() })
           .eq("razorpay_subscription_id", sub.id);
-
         console.log("🚫 Trial cancelled (no payment)");
       } else {
-        // ✅ payment ho chuka → ACTIVE rahega
-        console.log("ℹ️ Autopay cancelled but paid user → access till end_date");
+        console.log("ℹ️ Paid user cancelled autopay → access till end_date");
       }
     }
 

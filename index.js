@@ -101,6 +101,8 @@ app.get("/", (req, res) => {
 app.use("/create-subscription", createSubscription);
 app.use("/create-order", createOrder);
 app.use("/create-order/verify", createOrder);
+app.use("/verify-subscription", createOrder);  // 🔥 NEW
+app.use("/create-subscription", createSubscription);
 app.use("/cancel-subscription", cancelSubscription);
 
 /* 🔁 Backup checker for pending subscriptions */

@@ -1,6 +1,5 @@
 import express from "express";
 import Razorpay from "razorpay";
-import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
 
@@ -9,14 +8,10 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
+    const supabaseAdmin = req.app.locals.supabaseAdmin;
 
     const { data: app, error } = await supabaseAdmin
       .from("apps")
@@ -41,7 +36,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
-    const trialDays = app.trial_days || 1;
+    const trialDays = app.trial_days || 7;
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
@@ -49,10 +44,15 @@ router.post("/", async (req, res) => {
       start_at: Math.floor(Date.now() / 1000) + trialDays * 86400
     });
 
-    // Save as pending
-    const { data: newSub } = await supabaseAdmin
+    // Check if already exists
+    const { data: existingSub } = await supabaseAdmin
       .from("subscriptions")
-      .insert({
+      .select("*")
+      .eq("razorpay_subscription_id", subscription.id)
+      .maybeSingle();
+
+    if (!existingSub) {
+      await supabaseAdmin.from("subscriptions").insert({
         user_id,
         app_id,
         status: "pending",
@@ -60,9 +60,8 @@ router.post("/", async (req, res) => {
         razorpay_subscription_id: subscription.id,
         created_at: new Date(),
         updated_at: new Date()
-      })
-      .select()
-      .single();
+      });
+    }
 
     res.json({
       success: true,

@@ -16,7 +16,7 @@ router.use((req, res, next) => {
   next();
 });
 
-/* 🧾 CREATE ORDER - Check existing first */
+/* 🧾 CREATE ORDER - pending_direct status */
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
@@ -31,25 +31,34 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "App not found" });
     }
 
-    // 🔥 CHECK IF SUBSCRIPTION ALREADY EXISTS (active or trial)
-    const { data: existingSub } = await supabaseAdmin
+    // Check if already has active subscription
+    const { data: existingActive } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
       .eq("user_id", user_id)
       .eq("app_id", app_id)
+      .in("status", ["active", "trial"])
       .maybeSingle();
 
-    if (existingSub && (existingSub.status === "active" || existingSub.status === "trial")) {
+    if (existingActive) {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
+    // Create Razorpay order
     const order = await razorpay.orders.create({
       amount: app.price * 100,
       currency: "INR",
       receipt: `order_${Date.now()}`
     });
 
-    // 🔥 UPSERT - Update or Insert
+    // 🔥 UPSERT - pending_direct status
+    let { data: existingSub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("*")
+      .eq("user_id", user_id)
+      .eq("app_id", app_id)
+      .maybeSingle();
+
     if (existingSub) {
       await supabaseAdmin
         .from("subscriptions")
@@ -85,11 +94,12 @@ router.post("/", async (req, res) => {
   }
 });
 
-/* ✅ VERIFY PAYMENT */
+/* ✅ VERIFY PAYMENT - pending_direct → active */
 router.post("/verify", async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
+    // Verify signature
     const sign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + "|" + razorpay_payment_id)
@@ -103,14 +113,14 @@ router.post("/verify", async (req, res) => {
     const end = new Date();
     end.setFullYear(end.getFullYear() + 1);
 
-    // 🔥 UPDATE existing subscription
+    // 🔥 Update to ACTIVE
     const { error } = await supabaseAdmin
       .from("subscriptions")
       .update({
         status: "active",
         razorpay_payment_id,
-        start_date: start.toISOString().slice(0, 10),
-        end_date: end.toISOString().slice(0, 10),
+        start_date: start.toISOString().split('T')[0],
+        end_date: end.toISOString().split('T')[0],
         updated_at: new Date()
       })
       .eq("razorpay_order_id", razorpay_order_id);

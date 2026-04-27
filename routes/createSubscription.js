@@ -1,6 +1,5 @@
 import express from "express";
 import Razorpay from "razorpay";
-import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
 
@@ -9,10 +8,12 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+let supabaseAdmin = null;
+
+router.use((req, res, next) => {
+  supabaseAdmin = req.app.locals.supabaseAdmin;
+  next();
+});
 
 router.post("/", async (req, res) => {
   try {
@@ -22,8 +23,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Missing app_id or user_id" });
     }
 
-    // 🔎 Fetch app
-    const { data: app, error } = await supabase
+    const { data: app, error } = await supabaseAdmin
       .from("apps")
       .select("*")
       .eq("id", app_id)
@@ -33,22 +33,30 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "App not found" });
     }
 
-    // 💳 Create Razorpay subscription
+    // Create Razorpay subscription
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
       total_count: 12,
-      start_at: Math.floor(Date.now() / 1000) + app.trial_days * 86400
+      start_at: Math.floor(Date.now() / 1000) + (app.trial_days || 7) * 86400
     });
 
-    // ❗ IMPORTANT: NO ACCESS YET
-    await supabase.from("subscriptions").insert({
-      user_id,
-      app_id,
-      status: "pending", // ✅ FIX
-      amount: app.price,
-      razorpay_subscription_id: subscription.id
-    });
+    // Insert pending subscription
+    const { error: insertError } = await supabaseAdmin
+      .from("subscriptions")
+      .insert({
+        user_id,
+        app_id,
+        status: "pending",
+        amount: app.price,
+        razorpay_subscription_id: subscription.id,
+        created_at: new Date()
+      });
+
+    if (insertError) {
+      console.error("Insert error:", insertError);
+      return res.status(500).json({ error: "Database insert failed" });
+    }
 
     return res.json({
       key: process.env.RAZORPAY_KEY_ID,
@@ -57,7 +65,7 @@ router.post("/", async (req, res) => {
 
   } catch (err) {
     console.error("Create subscription error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: err.message });
   }
 });
 

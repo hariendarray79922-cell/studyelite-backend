@@ -1,8 +1,6 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import nodemailer from "nodemailer";
-import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
 import createSubscription from "./routes/createSubscription.js";
@@ -10,22 +8,23 @@ import createOrder from "./routes/createOrder.js";
 import webhook from "./routes/webhook.js";
 import { checkPendingSubscriptions } from "./utils/checkPendingSubs.js";
 import cancelSubscription from "./routes/cancelSubscription.js";
+import otpRoutes from "./routes/otpRoutes.js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 
-// Supabase Admin (Service Role Key - Bypasses RLS)
+// 🔥 SINGLE Supabase Admin Client (Reused everywhere)
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Make available to routes
+// Make available to all routes
 app.locals.supabaseAdmin = supabaseAdmin;
 
-/* 🔐 Razorpay Webhook */
+// Webhook needs raw body
 app.use(
   "/webhook",
   express.raw({ type: "application/json" }),
@@ -34,78 +33,20 @@ app.use(
 
 app.use(express.json());
 
-/* ================= OTP SYSTEM ================= */
-const otpStore = {};
+// ========== OTP ROUTES ==========
+app.use("/", otpRoutes);
 
-app.post("/send-otp", async (req, res) => {
-  const { email, phone } = req.body;
-  if (!phone && !email) return res.json({ success: false });
+// ========== PAYMENT ROUTES ==========
+app.use("/create-order", createOrder);        // Has / and /verify
+app.use("/create-subscription", createSubscription);
+app.use("/cancel-subscription", cancelSubscription);
 
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  if (email) otpStore[email] = otp;
-  if (phone) otpStore[phone] = otp;
-  console.log("OTP 👉", otp);
-
-  let smsOk = false, emailOk = false;
-
-  // SMS
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number: phone, message: `Your OTP is ${otp}` }),
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    const smsData = await smsRes.json();
-    if (smsRes.ok && smsData.success) smsOk = true;
-  } catch (err) { console.log("SMS ERROR:", err.message); }
-
-  // Email Fallback
-  if (!smsOk && email) {
-    try {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: { user: process.env.EMAIL, pass: process.env.PASS }
-      });
-      await transporter.sendMail({
-        from: `"StudyElite" <${process.env.EMAIL}>`,
-        to: email,
-        subject: "Your OTP Code",
-        html: `<h1>${otp}</h1>`
-      });
-      emailOk = true;
-    } catch (err) { console.log("MAIL ERROR:", err.message); }
-  }
-
-  res.json({ success: smsOk || emailOk, sms: smsOk, email: emailOk });
-});
-
-app.post("/verify-otp", (req, res) => {
-  const { email, phone, otp } = req.body;
-  if ((email && otpStore[email] == otp) || (phone && otpStore[phone] == otp)) {
-    if (email) delete otpStore[email];
-    if (phone) delete otpStore[phone];
-    return res.json({ success: true });
-  }
-  res.json({ success: false });
-});
-
-/* ================= ROUTES ================= */
+// ========== HEALTH CHECK ==========
 app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
 });
 
-app.use("/create-subscription", createSubscription);
-app.use("/create-order", createOrder);
-app.use("/create-order/verify", createOrder);
-app.use("/verify-subscription", createOrder);  // 🔥 NEW
-app.use("/create-subscription", createSubscription);
-app.use("/cancel-subscription", cancelSubscription);
-
-/* 🔁 Backup checker for pending subscriptions */
+// ========== BACKGROUND CHECKER ==========
 setInterval(() => {
   checkPendingSubscriptions();
 }, 60 * 1000);

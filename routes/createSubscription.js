@@ -33,34 +33,59 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "App not found" });
     }
 
-    // Create Razorpay subscription
-    const subscription = await razorpay.subscriptions.create({
-      plan_id: app.razorpay_plan_id,
-      customer_notify: 1,
-      total_count: 12,
-      start_at: Math.floor(Date.now() / 1000) + (app.trial_days || 7) * 86400
-    });
-
-    // Insert pending subscription
-    const { error: insertError } = await supabaseAdmin
+    // 🔥 CHECK IF SUBSCRIPTION ALREADY EXISTS
+    const { data: existingSub } = await supabaseAdmin
       .from("subscriptions")
-      .insert({
-        user_id,
-        app_id,
-        status: "pending",
-        amount: app.price,
-        razorpay_subscription_id: subscription.id,
-        created_at: new Date()
-      });
+      .select("*")
+      .eq("user_id", user_id)
+      .eq("app_id", app_id)
+      .maybeSingle();
 
-    if (insertError) {
-      console.error("Insert error:", insertError);
-      return res.status(500).json({ error: "Database insert failed" });
+    let subscriptionId;
+
+    if (existingSub && existingSub.razorpay_subscription_id) {
+      // Use existing subscription ID
+      subscriptionId = existingSub.razorpay_subscription_id;
+      console.log("✅ Using existing subscription:", subscriptionId);
+    } else {
+      // Create new Razorpay subscription
+      const subscription = await razorpay.subscriptions.create({
+        plan_id: app.razorpay_plan_id,
+        customer_notify: 1,
+        total_count: 12,
+        start_at: Math.floor(Date.now() / 1000) + (app.trial_days || 7) * 86400
+      });
+      subscriptionId = subscription.id;
+
+      // 🔥 UPSERT - Insert only if not exists
+      if (existingSub) {
+        // Update existing with subscription_id
+        await supabaseAdmin
+          .from("subscriptions")
+          .update({
+            razorpay_subscription_id: subscriptionId,
+            updated_at: new Date()
+          })
+          .eq("id", existingSub.id);
+      } else {
+        // Insert new
+        await supabaseAdmin
+          .from("subscriptions")
+          .insert({
+            user_id,
+            app_id,
+            status: "pending",
+            amount: app.price,
+            razorpay_subscription_id: subscriptionId,
+            created_at: new Date(),
+            updated_at: new Date()
+          });
+      }
     }
 
     return res.json({
       key: process.env.RAZORPAY_KEY_ID,
-      subscription_id: subscription.id
+      subscription_id: subscriptionId
     });
 
   } catch (err) {

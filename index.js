@@ -8,6 +8,7 @@ import createSubscription from "./routes/createSubscription.js";
 import createOrder from "./routes/createOrder.js";
 import webhook from "./routes/webhook.js";
 import { checkPendingSubscriptions } from "./utils/checkPendingSubs.js";
+import cancelSubscription from "./routes/cancelSubscription.js";
 
 dotenv.config();
 
@@ -141,6 +142,7 @@ app.use("/create-order", createOrder);
 
 /* 🔥 ADD THIS LINE - Frontend /create-order/verify ke liye */
 app.use("/create-order/verify", createOrder);  // ← YAHI LINE ADD KARO
+ app.use("/cancel-subscription", cancelSubscription);
 
 /* 🔁 Backup checker */
 setInterval(() => {

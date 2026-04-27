@@ -4,37 +4,27 @@ import fetch from "node-fetch";
 
 const router = express.Router();
 
-// OTP Store with rate limiting
 const otpStore = new Map();
 const rateLimit = new Map();
 
-// Clean up every 5 minutes
+// Cleanup every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of otpStore.entries()) {
-    if (now - value.timestamp > 5 * 60 * 1000) {
-      otpStore.delete(key);
-    }
+    if (now - value.timestamp > 5 * 60 * 1000) otpStore.delete(key);
   }
   for (const [key, value] of rateLimit.entries()) {
-    if (now - value > 60 * 60 * 1000) {
-      rateLimit.delete(key);
-    }
+    if (now - value > 60 * 60 * 1000) rateLimit.delete(key);
   }
 }, 5 * 60 * 1000);
 
-// Rate limit check
 function checkRateLimit(identifier) {
   const now = Date.now();
   const attempts = rateLimit.get(identifier) || [];
-  const recentAttempts = attempts.filter(t => now - t < 60 * 1000);
-  
-  if (recentAttempts.length >= 3) {
-    return false;
-  }
-  
-  recentAttempts.push(now);
-  rateLimit.set(identifier, recentAttempts);
+  const recent = attempts.filter(t => now - t < 60 * 1000);
+  if (recent.length >= 3) return false;
+  recent.push(now);
+  rateLimit.set(identifier, recent);
   return true;
 }
 
@@ -42,25 +32,17 @@ router.post("/send-otp", async (req, res) => {
   const { email, phone } = req.body;
   const identifier = phone || email;
 
-  if (!phone && !email) {
-    return res.json({ success: false });
-  }
-
-  // 🔥 RATE LIMIT CHECK
+  if (!phone && !email) return res.json({ success: false });
   if (!checkRateLimit(identifier)) {
-    return res.status(429).json({ 
-      success: false, 
-      error: "Too many attempts. Please wait 1 minute." 
-    });
+    return res.status(429).json({ success: false, error: "Too many attempts" });
   }
 
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   otpStore.set(identifier, { otp, timestamp: Date.now() });
-  console.log("OTP 👉", otp, "for:", identifier);
+  console.log("OTP 👉", otp);
 
   let smsOk = false, emailOk = false;
 
-  // SMS attempt
   if (phone) {
     try {
       const controller = new AbortController();
@@ -72,12 +54,10 @@ router.post("/send-otp", async (req, res) => {
         signal: controller.signal
       });
       clearTimeout(timeout);
-      const smsData = await smsRes.json();
-      if (smsRes.ok && smsData.success) smsOk = true;
-    } catch (err) { console.log("SMS ERROR:", err.message); }
+      if (smsRes.ok) smsOk = true;
+    } catch (err) { console.log("SMS ERROR"); }
   }
 
-  // Email fallback
   if (!smsOk && email) {
     try {
       const transporter = nodemailer.createTransport({
@@ -91,7 +71,7 @@ router.post("/send-otp", async (req, res) => {
         html: `<h1>${otp}</h1>`
       });
       emailOk = true;
-    } catch (err) { console.log("MAIL ERROR:", err.message); }
+    } catch (err) { console.log("MAIL ERROR"); }
   }
 
   res.json({ success: smsOk || emailOk, sms: smsOk, email: emailOk });

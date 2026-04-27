@@ -3,9 +3,12 @@ import nodemailer from "nodemailer";
 import fetch from "node-fetch";
 
 const router = express.Router();
-const otpStore = new Map(); // Better than object
 
-// Clean up old OTPs every 5 minutes
+// OTP Store with rate limiting
+const otpStore = new Map();
+const rateLimit = new Map();
+
+// Clean up every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of otpStore.entries()) {
@@ -13,20 +16,47 @@ setInterval(() => {
       otpStore.delete(key);
     }
   }
+  for (const [key, value] of rateLimit.entries()) {
+    if (now - value > 60 * 60 * 1000) {
+      rateLimit.delete(key);
+    }
+  }
 }, 5 * 60 * 1000);
+
+// Rate limit check
+function checkRateLimit(identifier) {
+  const now = Date.now();
+  const attempts = rateLimit.get(identifier) || [];
+  const recentAttempts = attempts.filter(t => now - t < 60 * 1000);
+  
+  if (recentAttempts.length >= 3) {
+    return false;
+  }
+  
+  recentAttempts.push(now);
+  rateLimit.set(identifier, recentAttempts);
+  return true;
+}
 
 router.post("/send-otp", async (req, res) => {
   const { email, phone } = req.body;
+  const identifier = phone || email;
 
   if (!phone && !email) {
     return res.json({ success: false });
   }
 
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  const identifier = phone || email;
+  // 🔥 RATE LIMIT CHECK
+  if (!checkRateLimit(identifier)) {
+    return res.status(429).json({ 
+      success: false, 
+      error: "Too many attempts. Please wait 1 minute." 
+    });
+  }
 
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
   otpStore.set(identifier, { otp, timestamp: Date.now() });
-  console.log("OTP 👉", otp);
+  console.log("OTP 👉", otp, "for:", identifier);
 
   let smsOk = false, emailOk = false;
 

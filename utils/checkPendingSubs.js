@@ -15,7 +15,6 @@ export async function checkPendingSubscriptions() {
       key_secret: process.env.RAZORPAY_KEY_SECRET
     });
 
-    // Get pending subscriptions
     const { data: subs } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -32,7 +31,6 @@ export async function checkPendingSubscriptions() {
           const rpSub = await razorpay.subscriptions.fetch(sub.razorpay_subscription_id);
           console.log("🔎 Subscription:", sub.razorpay_subscription_id, rpSub.status);
 
-          // pending → trial (autopay approved)
           if (sub.status === "pending" && rpSub.status === "authenticated") {
             await supabaseAdmin
               .from("subscriptions")
@@ -46,13 +44,12 @@ export async function checkPendingSubscriptions() {
             console.log("✅ Trial started:", sub.id);
           }
 
-          // trial + cancelled + no payment → trial_cancelled
           if (sub.status === "trial" && rpSub.status === "cancelled" && !sub.razorpay_payment_id) {
             await supabaseAdmin
               .from("subscriptions")
               .update({ status: "trial_cancelled", updated_at: new Date() })
               .eq("id", sub.id);
-            console.log("🚫 Trial revoked (autopay cancelled):", sub.id);
+            console.log("🚫 Trial revoked:", sub.id);
           }
         }
       } catch (e) {

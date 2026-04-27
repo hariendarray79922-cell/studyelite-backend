@@ -15,29 +15,23 @@ dotenv.config();
 const app = express();
 app.use(cors());
 
-// 🔥 SINGLE Supabase Admin Client (Reused everywhere)
+// 🔥 SINGLE Supabase Admin Client
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Make available to all routes
 app.locals.supabaseAdmin = supabaseAdmin;
 
 // Webhook needs raw body
-app.use(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  webhook
-);
-
+app.use("/webhook", express.raw({ type: "application/json" }), webhook);
 app.use(express.json());
 
 // ========== OTP ROUTES ==========
 app.use("/", otpRoutes);
 
-// ========== PAYMENT ROUTES ==========
-app.use("/create-order", createOrder);        // Has / and /verify
+// ========== 🔥 FIXED PAYMENT ROUTES ==========
+app.use("/create-order", createOrder);           // Has / and /verify and /verify-subscription
 app.use("/create-subscription", createSubscription);
 app.use("/cancel-subscription", cancelSubscription);
 

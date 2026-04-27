@@ -9,11 +9,27 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+// Helper to validate user
+async function validateUser(supabaseAdmin, user_id) {
+  if (!user_id) return false;
+  const { data } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("id", user_id)
+    .maybeSingle();
+  return !!data;
+}
+
 /* 🧾 CREATE ORDER */
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
+
+    // 🔥 AUTH CHECK
+    if (!user_id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
     const { data: app, error } = await supabaseAdmin
       .from("apps")
@@ -44,7 +60,7 @@ router.post("/", async (req, res) => {
       receipt: `order_${Date.now()}`
     });
 
-    // Check if order already exists (prevent duplicate)
+    // Prevent duplicate
     const { data: existingOrder } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -63,6 +79,8 @@ router.post("/", async (req, res) => {
       });
     }
 
+    console.log(`✅ Order created for user: ${user_id}, app: ${app.app_name}`);
+
     res.json({
       success: true,
       key: process.env.RAZORPAY_KEY_ID,
@@ -76,13 +94,18 @@ router.post("/", async (req, res) => {
   }
 });
 
-/* ✅ VERIFY PAYMENT - WITH DUPLICATE PROTECTION */
+/* ✅ VERIFY PAYMENT */
 router.post("/verify", async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
 
-    // 🔥 DUPLICATE PAYMENT CHECK
+    // 🔥 AUTH CHECK
+    if (!user_id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Duplicate payment check
     const { data: existingPayment } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -127,7 +150,7 @@ router.post("/verify", async (req, res) => {
       return res.status(500).json({ error: "DB update failed" });
     }
 
-    console.log("✅ PAYMENT VERIFIED:", razorpay_payment_id);
+    console.log(`✅ PAYMENT VERIFIED: ${razorpay_payment_id} for user: ${user_id}`);
     res.json({ success: true, subscription: data });
 
   } catch (err) {
@@ -136,13 +159,17 @@ router.post("/verify", async (req, res) => {
   }
 });
 
-/* 🧪 TRIAL VERIFY */
+/* 🔥 FIXED: TRIAL VERIFY - CORRECT ROUTE */
 router.post("/verify-subscription", async (req, res) => {
   try {
     const { razorpay_subscription_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
 
-    // DUPLICATE CHECK
+    if (!user_id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Duplicate check
     const { data: existingPayment } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -184,7 +211,7 @@ router.post("/verify-subscription", async (req, res) => {
       return res.status(500).json({ error: "DB update failed" });
     }
 
-    console.log("✅ TRIAL ACTIVATED:", razorpay_payment_id);
+    console.log(`✅ TRIAL ACTIVATED: ${razorpay_payment_id} for user: ${user_id}`);
     res.json({ success: true, subscription: data });
 
   } catch (err) {

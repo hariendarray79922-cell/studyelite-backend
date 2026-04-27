@@ -23,15 +23,16 @@ export default async function webhook(req, res) {
     try {
       payload = JSON.parse(body);
     } catch (e) {
-      console.error("Invalid JSON payload");
       return res.status(400).send("Invalid JSON");
     }
 
     const event = payload.event;
     console.log("📩 Webhook:", event);
 
+    // 🔥 SUBSCRIPTION AUTHENTICATED → pending → trial
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
+      
       await supabaseAdmin
         .from("subscriptions")
         .update({
@@ -42,11 +43,14 @@ export default async function webhook(req, res) {
         })
         .eq("razorpay_subscription_id", sub.id)
         .eq("status", "pending");
-      console.log("✅ Trial started:", sub.id);
+      
+      console.log("✅ Trial started via webhook:", sub.id);
     }
 
+    // 🔥 PAYMENT CAPTURED → trial → active
     if (event === "payment.captured") {
       const payment = payload.payload.payment.entity;
+      
       await supabaseAdmin
         .from("subscriptions")
         .update({
@@ -55,11 +59,14 @@ export default async function webhook(req, res) {
           updated_at: new Date()
         })
         .eq("razorpay_subscription_id", payment.subscription_id);
-      console.log("💰 Payment captured → ACTIVE:", payment.id);
+      
+      console.log("💰 Payment captured:", payment.id);
     }
 
+    // 🔥 SUBSCRIPTION CANCELLED
     if (event === "subscription.cancelled") {
       const sub = payload.payload.subscription.entity;
+      
       const { data } = await supabaseAdmin
         .from("subscriptions")
         .select("razorpay_payment_id")
@@ -71,9 +78,9 @@ export default async function webhook(req, res) {
           .from("subscriptions")
           .update({ status: "trial_cancelled", updated_at: new Date() })
           .eq("razorpay_subscription_id", sub.id);
-        console.log("🚫 Trial cancelled");
+        console.log("🚫 Trial cancelled (no payment)");
       } else {
-        console.log("ℹ️ Paid user cancelled autopay");
+        console.log("ℹ️ Paid user cancelled autopay, access till end_date");
       }
     }
 

@@ -9,18 +9,14 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// Get Supabase admin from app.locals
 let supabaseAdmin = null;
 
 router.use((req, res, next) => {
   supabaseAdmin = req.app.locals.supabaseAdmin;
-  if (!supabaseAdmin) {
-    console.error("❌ supabaseAdmin not initialized!");
-  }
   next();
 });
 
-/* 🧾 CREATE ORDER */
+/* 🧾 CREATE ORDER - Check existing first */
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
@@ -35,21 +31,47 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "App not found" });
     }
 
+    // 🔥 CHECK IF SUBSCRIPTION ALREADY EXISTS (active or trial)
+    const { data: existingSub } = await supabaseAdmin
+      .from("subscriptions")
+      .select("*")
+      .eq("user_id", user_id)
+      .eq("app_id", app_id)
+      .maybeSingle();
+
+    if (existingSub && (existingSub.status === "active" || existingSub.status === "trial")) {
+      return res.status(400).json({ error: "Subscription already active" });
+    }
+
     const order = await razorpay.orders.create({
       amount: app.price * 100,
       currency: "INR",
       receipt: `order_${Date.now()}`
     });
 
-    // Insert pending subscription
-    await supabaseAdmin.from("subscriptions").insert({
-      user_id,
-      app_id,
-      status: "pending_direct",
-      amount: app.price,
-      razorpay_order_id: order.id,
-      created_at: new Date()
-    });
+    // 🔥 UPSERT - Update or Insert
+    if (existingSub) {
+      await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          razorpay_order_id: order.id,
+          status: "pending_direct",
+          updated_at: new Date()
+        })
+        .eq("id", existingSub.id);
+    } else {
+      await supabaseAdmin
+        .from("subscriptions")
+        .insert({
+          user_id,
+          app_id,
+          status: "pending_direct",
+          amount: app.price,
+          razorpay_order_id: order.id,
+          created_at: new Date(),
+          updated_at: new Date()
+        });
+    }
 
     res.json({
       key: process.env.RAZORPAY_KEY_ID,
@@ -68,7 +90,6 @@ router.post("/verify", async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
-    // Verify signature
     const sign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + "|" + razorpay_payment_id)
@@ -78,11 +99,11 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    // Update subscription to active
     const start = new Date();
     const end = new Date();
     end.setFullYear(end.getFullYear() + 1);
 
+    // 🔥 UPDATE existing subscription
     const { error } = await supabaseAdmin
       .from("subscriptions")
       .update({

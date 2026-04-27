@@ -127,7 +127,7 @@ app.post("/verify-otp", (req, res) => {
   res.json({ success: false });
 });
 
-/* ================= EXISTING ROUTES ================= */
+/* ================= ROUTES ================= */
 
 app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
@@ -138,6 +138,9 @@ app.use("/create-subscription", createSubscription);
 
 /* 💳 Direct Payment */
 app.use("/create-order", createOrder);
+
+/* 🔥 ADD THIS LINE - Frontend /create-order/verify ke liye */
+app.use("/create-order/verify", createOrder);  // ← YAHI LINE ADD KARO
 
 /* 🔁 Backup checker */
 setInterval(() => {

@@ -1,11 +1,9 @@
 import Razorpay from "razorpay";
 import { createClient } from "@supabase/supabase-js";
 
-let supabaseAdmin = null;
-
 export async function checkPendingSubscriptions() {
   try {
-    supabaseAdmin = createClient(
+    const supabaseAdmin = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
@@ -31,6 +29,7 @@ export async function checkPendingSubscriptions() {
           const rpSub = await razorpay.subscriptions.fetch(sub.razorpay_subscription_id);
           console.log("🔎 Subscription:", sub.razorpay_subscription_id, rpSub.status);
 
+          // pending → trial (autopay approved)
           if (sub.status === "pending" && rpSub.status === "authenticated") {
             await supabaseAdmin
               .from("subscriptions")
@@ -44,12 +43,13 @@ export async function checkPendingSubscriptions() {
             console.log("✅ Trial started:", sub.id);
           }
 
+          // trial + cancelled + no payment → trial_cancelled
           if (sub.status === "trial" && rpSub.status === "cancelled" && !sub.razorpay_payment_id) {
             await supabaseAdmin
               .from("subscriptions")
               .update({ status: "trial_cancelled", updated_at: new Date() })
               .eq("id", sub.id);
-            console.log("🚫 Trial revoked:", sub.id);
+            console.log("🚫 Trial revoked (autopay cancelled):", sub.id);
           }
         }
       } catch (e) {

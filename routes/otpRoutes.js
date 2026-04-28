@@ -29,7 +29,7 @@ function checkRateLimit(identifier) {
 }
 
 router.post("/send-otp", async (req, res) => {
-  const { email, phone } = req.body;
+  const { email, phone, resend } = req.body;
   const identifier = phone || email;
 
   if (!phone && !email) return res.json({ success: false });
@@ -37,13 +37,22 @@ router.post("/send-otp", async (req, res) => {
     return res.status(429).json({ success: false, error: "Too many attempts" });
   }
 
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  let otp;
+const existing = otpStore.get(identifier);
+
+if (resend && existing && (Date.now() - existing.timestamp) < 5 * 60 * 1000) {
+  // 🔁 RESEND → SAME OTP
+  otp = existing.otp;
+} else {
+  // 🆕 NEW OTP
+  otp = Math.floor(1000 + Math.random() * 9000).toString();
   otpStore.set(identifier, { otp, timestamp: Date.now() });
+}
   console.log("OTP 👉", otp);
 
   let smsOk = false, emailOk = false;
 
-  if (phone) {
+  if (phone && !resend) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 4000);
@@ -58,7 +67,7 @@ router.post("/send-otp", async (req, res) => {
     } catch (err) { console.log("SMS ERROR"); }
   }
 
-  if (!smsOk && email) {
+  if ((resend || !smsOk) && email) {
     try {
       const transporter = nodemailer.createTransport({
         service: "gmail",

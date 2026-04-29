@@ -15,7 +15,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 
-// 🔥 SINGLE Supabase Admin Client
+// 🔥 Supabase Admin
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -23,24 +23,26 @@ const supabaseAdmin = createClient(
 
 app.locals.supabaseAdmin = supabaseAdmin;
 
-// Webhook needs raw body
+// Webhook (raw body)
 app.use("/webhook", express.raw({ type: "application/json" }), webhook);
+
+// JSON parser
 app.use(express.json());
 
-// ========== OTP ROUTES ==========
-app.use("/", otpRoutes);
+// ✅ OTP ROUTES FIX
+app.use("/api", otpRoutes);
 
-// ========== 🔥 FIXED PAYMENT ROUTES ==========
-app.use("/create-order", createOrder);           // Has / and /verify and /verify-subscription
+// ✅ PAYMENT ROUTES
+app.use("/create-order", createOrder);
 app.use("/create-subscription", createSubscription);
 app.use("/cancel-subscription", cancelSubscription);
 
-// ========== HEALTH CHECK ==========
+// ✅ HEALTH CHECK
 app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
 });
 
-// ========== BACKGROUND CHECKER ==========
+// ✅ BACKGROUND CHECK
 setInterval(() => {
   checkPendingSubscriptions();
 }, 60 * 1000);

@@ -7,7 +7,7 @@ const router = express.Router();
 const otpStore = new Map();
 const rateLimit = new Map();
 
-/* 🔄 CLEANUP */
+/* 🧹 CLEANUP */
 setInterval(() => {
   const now = Date.now();
 
@@ -24,53 +24,61 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-/* 🚫 RATE LIMIT */
+/* ⚡ RATE LIMIT */
 function checkRateLimit(identifier) {
   const now = Date.now();
   const attempts = rateLimit.get(identifier) || [];
 
   const recent = attempts.filter(t => now - t < 60 * 1000);
+
   if (recent.length >= 3) return false;
 
   recent.push(now);
   rateLimit.set(identifier, recent);
+
   return true;
 }
 
-/* ================= OTP SEND ================= */
+/* 🚀 SEND OTP */
 router.post("/send-otp", async (req, res) => {
   const { email, phone, resend } = req.body;
   const identifier = phone || email;
 
-  if (!phone && !email) return res.json({ success: false });
+  console.log("📩 REQUEST 👉", { phone, email, resend });
+
+  if (!phone && !email) {
+    return res.json({ success: false });
+  }
 
   if (!checkRateLimit(identifier)) {
     return res.status(429).json({ success: false, error: "Too many attempts" });
   }
 
-  /* 🔢 OTP GENERATE */
+  /* 🔐 OTP GENERATE / REUSE */
   let otp;
   const existing = otpStore.get(identifier);
 
-  if (resend && existing && (Date.now() - existing.timestamp) < 5 * 60 * 1000) {
-    otp = existing.otp; // 🔁 same OTP
+  if (resend && existing && (Date.now() - existing.timestamp < 5 * 60 * 1000)) {
+    otp = existing.otp;
   } else {
     otp = Math.floor(1000 + Math.random() * 9000).toString();
     otpStore.set(identifier, { otp, timestamp: Date.now() });
   }
 
-  console.log("OTP 👉", otp);
+  console.log("🔑 OTP 👉", otp);
 
   let smsOk = false;
   let emailOk = false;
 
-  /* ================= SMS TRY (FAST 1.5s) ================= */
+  /* =========================
+     📱 SMS TRY (ONLY FIRST TIME)
+  ========================== */
   if (phone && !resend) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1500); // ⚡ fast
+      const timeout = setTimeout(() => controller.abort(), 4000);
 
-      const smsPromise = fetch("https://sms.studyelite.shop/send-sms", {
+      const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -78,22 +86,26 @@ router.post("/send-otp", async (req, res) => {
           message: `Your OTP is ${otp}`
         }),
         signal: controller.signal
-      }).then(res => res.ok).catch(() => false);
+      });
 
-      smsOk = await smsPromise;
       clearTimeout(timeout);
 
-      console.log("SMS STATUS 👉", smsOk);
+      smsOk = smsRes.ok;
+
+      console.log("📲 SMS STATUS 👉", smsOk);
 
     } catch (err) {
-      console.log("SMS ERROR ❌", err.message);
-      smsOk = false;
+      console.log("❌ SMS ERROR 👉", err.message);
     }
   }
 
-  /* ================= EMAIL FALLBACK ================= */
+  /* =========================
+     📧 EMAIL FALLBACK / RESEND
+  ========================== */
   if ((resend || !smsOk) && email) {
     try {
+      console.log("📧 Sending EMAIL OTP...");
+
       const transporter = nodemailer.createTransport({
         service: "gmail",
         auth: {
@@ -102,24 +114,23 @@ router.post("/send-otp", async (req, res) => {
         }
       });
 
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: `"StudyElite" <${process.env.EMAIL}>`,
         to: email,
         subject: "Your OTP Code",
-        html: `<h2>Your OTP is:</h2><h1>${otp}</h1>`
+        html: `<h1>${otp}</h1><p>This OTP is valid for 5 minutes.</p>`
       });
 
-      console.log("EMAIL SENT ✅");
+      console.log("✅ EMAIL SENT 👉", info.response);
+
       emailOk = true;
 
     } catch (err) {
-      console.log("MAIL ERROR ❌");
-      console.log("MESSAGE 👉", err.message);
-      if (err.response) console.log("SMTP 👉", err.response);
+      console.log("❌ MAIL ERROR 👉", err.message);
     }
   }
 
-  /* ================= RESPONSE ================= */
+  /* 🚀 RESPONSE */
   res.json({
     success: smsOk || emailOk,
     sms: smsOk,
@@ -127,7 +138,7 @@ router.post("/send-otp", async (req, res) => {
   });
 });
 
-/* ================= VERIFY ================= */
+/* ✅ VERIFY OTP */
 router.post("/verify-otp", (req, res) => {
   const { email, phone, otp } = req.body;
 

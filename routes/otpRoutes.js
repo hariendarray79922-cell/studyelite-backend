@@ -1,44 +1,45 @@
 import express from "express";
 import nodemailer from "nodemailer";
 import fetch from "node-fetch";
+import dns from "dns";
 
 const router = express.Router();
 const otpStore = new Map();
+
+/* 🔥 FORCE IPv4 */
+dns.setDefaultResultOrder("ipv4first");
 
 /* 🧹 CLEANUP */
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of otpStore.entries()) {
-    if (now - v.timestamp > 5 * 60 * 1000) otpStore.delete(k);
+    if (now - v.timestamp > 5 * 60 * 1000) {
+      otpStore.delete(k);
+    }
   }
 }, 5 * 60 * 1000);
 
-/* 🔥 FORCE IPv4 (important for Render) */
-import dns from "dns";
-dns.setDefaultResultOrder("ipv4first");
-
-/* 🔥 GMAIL SMTP HARD FIX */
+/* 🔥 GMAIL SMTP (MAX FORCE CONFIG) */
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
 
-  port: 587,          // 465 try मत कर पहले
-  secure: false,
+  port: 465,          // SSL
+  secure: true,
 
   auth: {
     user: process.env.EMAIL,
     pass: process.env.PASS // 🔑 App Password
   },
 
-  requireTLS: true,
+  family: 4, // 🔥 IPv4 only
+
+  connectionTimeout: 60000,
+  greetingTimeout: 60000,
+  socketTimeout: 60000,
 
   tls: {
-    rejectUnauthorized: false,
-    minVersion: "TLSv1.2"
-  },
-
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000
+    rejectUnauthorized: false
+  }
 });
 
 /* 🔍 VERIFY */

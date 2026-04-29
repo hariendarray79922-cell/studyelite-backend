@@ -2,17 +2,6 @@ import express from "express";
 import fetch from "node-fetch";
 
 const router = express.Router();
-const otpStore = new Map();
-
-/* 🧹 CLEANUP */
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of otpStore.entries()) {
-    if (now - v.timestamp > 5 * 60 * 1000) {
-      otpStore.delete(k);
-    }
-  }
-}, 5 * 60 * 1000);
 
 /* 🚀 SEND OTP */
 router.post("/send-otp", async (req, res) => {
@@ -21,19 +10,15 @@ router.post("/send-otp", async (req, res) => {
   console.log("📩 REQUEST 👉", { phone, email });
 
   if (!phone && !email) {
-    return res.json({ success: false });
+    return res.json({ success: false, error: "No input" });
   }
 
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  const key = phone || email;
-
-  otpStore.set(key, { otp, timestamp: Date.now() });
-  console.log("🔑 OTP 👉", otp);
-
   let smsOk = false;
-  let emailOk = false;
+  let method = "";
 
-  /* 📱 SMS TRY */
+  /* =========================
+     📱 SMS TRY
+  ========================== */
   if (phone) {
     try {
       const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
@@ -41,22 +26,29 @@ router.post("/send-otp", async (req, res) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           number: phone,
-          message: `Your OTP is ${otp}`
+          message: `Your OTP is being sent...`
         })
       });
 
       smsOk = smsRes.ok;
+
       console.log("📲 SMS STATUS 👉", smsOk);
+
+      if (smsOk) {
+        method = "sms";
+        return res.json({ success: true, method });
+      }
+
     } catch (err) {
       console.log("❌ SMS ERROR 👉", err.message);
     }
   }
 
-  /* 📧 EMAIL FALLBACK (SUPABASE) */
-  if (!smsOk && email) {
+  /* =========================
+     📧 EMAIL FALLBACK (SUPABASE)
+  ========================== */
+  if (email) {
     try {
-      console.log("📧 Sending via Supabase...");
-
       const supabase = req.app.locals.supabaseAdmin;
 
       const { error } = await supabase.auth.signInWithOtp({
@@ -64,25 +56,25 @@ router.post("/send-otp", async (req, res) => {
       });
 
       if (error) {
-        console.log("❌ SUPABASE ERROR 👉", error.message);
-      } else {
-        console.log("✅ EMAIL SENT (SUPABASE)");
-        emailOk = true;
+        console.log("❌ EMAIL ERROR 👉", error.message);
+        return res.json({ success: false });
       }
+
+      console.log("✅ EMAIL OTP SENT");
+      method = "email";
+
+      return res.json({ success: true, method });
 
     } catch (err) {
       console.log("❌ EMAIL ERROR 👉", err.message);
+      return res.json({ success: false });
     }
   }
 
-  res.json({
-    success: smsOk || emailOk,
-    sms: smsOk,
-    email: emailOk
-  });
+  res.json({ success: false });
 });
 
-/* ✅ VERIFY OTP */
+/* 🔐 VERIFY OTP */
 router.post("/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
 
@@ -96,9 +88,11 @@ router.post("/verify-otp", async (req, res) => {
     });
 
     if (error) {
+      console.log("❌ VERIFY ERROR 👉", error.message);
       return res.json({ success: false });
     }
 
+    console.log("✅ VERIFIED");
     res.json({ success: true });
 
   } catch (err) {

@@ -6,7 +6,7 @@ import dns from "dns";
 const router = express.Router();
 const otpStore = new Map();
 
-/* 🔥 FORCE IPv4 */
+/* 🔥 FORCE IPv4 (Render fix) */
 dns.setDefaultResultOrder("ipv4first");
 
 /* 🧹 CLEANUP */
@@ -19,33 +19,35 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-/* 🔥 GMAIL SMTP (MAX FORCE CONFIG) */
+/* 🔥 GMAIL SMTP CONFIG */
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-
-  port: 465,          // SSL
-  secure: true,
+  port: 587,              // 587 is more stable than 465 on cloud
+  secure: false,
 
   auth: {
     user: process.env.EMAIL,
-    pass: process.env.PASS // 🔑 App Password
+    pass: process.env.PASS // 🔑 App Password (not normal password)
   },
 
-  family: 4, // 🔥 IPv4 only
-
-  connectionTimeout: 60000,
-  greetingTimeout: 60000,
-  socketTimeout: 60000,
+  requireTLS: true,
 
   tls: {
-    rejectUnauthorized: false
-  }
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2"
+  },
+
+  family: 4, // IPv4
+
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000
 });
 
-/* 🔍 VERIFY */
+/* 🔍 VERIFY SMTP */
 transporter.verify((err) => {
   if (err) {
-    console.log("❌ SMTP ERROR 👉", err);
+    console.log("❌ SMTP ERROR 👉", err.message);
   } else {
     console.log("✅ SMTP READY (GMAIL)");
   }
@@ -65,7 +67,6 @@ router.post("/send-otp", async (req, res) => {
   const key = phone || email;
 
   otpStore.set(key, { otp, timestamp: Date.now() });
-
   console.log("🔑 OTP 👉", otp);
 
   let smsOk = false;
@@ -85,16 +86,15 @@ router.post("/send-otp", async (req, res) => {
 
       smsOk = smsRes.ok;
       console.log("📲 SMS STATUS 👉", smsOk);
-
     } catch (err) {
       console.log("❌ SMS ERROR 👉", err.message);
     }
   }
 
-  /* 📧 EMAIL FALLBACK (GMAIL) */
+  /* 📧 EMAIL FALLBACK (GMAIL SMTP) */
   if (!smsOk && email) {
     try {
-      console.log("📧 Sending EMAIL OTP (GMAIL)...");
+      console.log("📧 Sending EMAIL OTP...");
 
       const info = await transporter.sendMail({
         from: `"StudyElite" <${process.env.EMAIL}>`,
@@ -107,7 +107,7 @@ router.post("/send-otp", async (req, res) => {
       emailOk = true;
 
     } catch (err) {
-      console.log("❌ MAIL ERROR 👉", err);
+      console.log("❌ MAIL ERROR 👉", err.message);
     }
   }
 

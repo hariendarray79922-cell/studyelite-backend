@@ -7,39 +7,28 @@ const router = express.Router();
 const otpStore = new Map();
 const rateLimit = new Map();
 
-/* 🧹 CLEANUP */
+// Cleanup
 setInterval(() => {
   const now = Date.now();
-
   for (const [key, value] of otpStore.entries()) {
-    if (now - value.timestamp > 5 * 60 * 1000) {
-      otpStore.delete(key);
-    }
+    if (now - value.timestamp > 5 * 60 * 1000) otpStore.delete(key);
   }
-
   for (const [key, value] of rateLimit.entries()) {
-    if (now - value > 60 * 60 * 1000) {
-      rateLimit.delete(key);
-    }
+    if (now - value > 60 * 60 * 1000) rateLimit.delete(key);
   }
 }, 5 * 60 * 1000);
 
-/* ⚡ RATE LIMIT */
 function checkRateLimit(identifier) {
   const now = Date.now();
   const attempts = rateLimit.get(identifier) || [];
-
   const recent = attempts.filter(t => now - t < 60 * 1000);
-
   if (recent.length >= 3) return false;
-
   recent.push(now);
   rateLimit.set(identifier, recent);
-
   return true;
 }
 
-/* 📧 TRANSPORTER (GLOBAL - FAST) */
+// ✅ FIXED TRANSPORTER - No timeout race
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 465,
@@ -48,10 +37,20 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL,
     pass: process.env.PASS
   },
-  connectionTimeout: 10000
+  connectionTimeout: 30000,    // 30 seconds
+  greetingTimeout: 30000,
+  socketTimeout: 30000
 });
 
-/* 🚀 SEND OTP */
+// Verify transporter on startup
+transporter.verify((error, success) => {
+  if (error) {
+    console.log("❌ SMTP Error:", error.message);
+  } else {
+    console.log("✅ SMTP Ready on port 465");
+  }
+});
+
 router.post("/send-otp", async (req, res) => {
   const { email, phone, resend } = req.body;
   const identifier = phone || email;
@@ -66,7 +65,6 @@ router.post("/send-otp", async (req, res) => {
     return res.status(429).json({ success: false, error: "Too many attempts" });
   }
 
-  /* 🔐 OTP GENERATE / REUSE */
   let otp;
   const existing = otpStore.get(identifier);
 
@@ -82,70 +80,55 @@ router.post("/send-otp", async (req, res) => {
   let smsOk = false;
   let emailOk = false;
 
-  /* =========================
-     📱 SMS TRY
-  ========================== */
+  // 📱 SMS
   if (phone && !resend) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
-
+      const timeout = setTimeout(() => controller.abort(), 5000);
       const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          number: phone,
-          message: `Your OTP is ${otp}`
-        }),
+        body: JSON.stringify({ number: phone, message: `Your OTP is ${otp}` }),
         signal: controller.signal
       });
-
       clearTimeout(timeout);
-
       smsOk = smsRes.ok;
-
       console.log("📲 SMS STATUS 👉", smsOk);
-
     } catch (err) {
       console.log("❌ SMS ERROR 👉", err.message);
     }
   }
 
-  /* =========================
-     📧 EMAIL FALLBACK
-  ========================== */
+  // 📧 EMAIL - WITHOUT TIMEOUT RACE (FIXED)
   if ((resend || !smsOk) && email) {
     try {
       console.log("📧 Sending EMAIL OTP...");
-
-      const info = await Promise.race([
-        transporter.sendMail({
-          from: `"StudyElite" <${process.env.EMAIL}>`,
-          to: email,
-          subject: "Your OTP Code",
-          html: `
-            <div style="font-family:sans-serif;text-align:center">
-              <h2>🔐 Your OTP</h2>
-              <h1>${otp}</h1>
-              <p>This OTP is valid for 5 minutes.</p>
-            </div>
-          `
-        }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Mail timeout")), 8000)
-        )
-      ]);
-
-      console.log("✅ EMAIL SENT 👉", info.response);
-
+      
+      // Direct send, no timeout race
+      const info = await transporter.sendMail({
+        from: `"StudyElite" <${process.env.EMAIL}>`,
+        to: email,
+        subject: "Your OTP Code - StudyElite",
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
+            <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
+            <h1 style="font-size: 42px; letter-spacing: 5px; color: #2563eb;">${otp}</h1>
+            <p>This OTP is valid for <strong>5 minutes</strong>.</p>
+            <hr style="margin: 20px 0;">
+            <p style="color: #666; font-size: 12px;">StudyElite - Secure Learning Platform</p>
+          </div>
+        `
+      });
+      
+      console.log("✅ EMAIL SENT 👉", info.messageId);
       emailOk = true;
-
+      
     } catch (err) {
       console.log("❌ MAIL ERROR 👉", err.message);
+      console.log("Error code:", err.code);
     }
   }
 
-  /* 🚀 RESPONSE */
   res.json({
     success: smsOk || emailOk,
     sms: smsOk,
@@ -153,18 +136,16 @@ router.post("/send-otp", async (req, res) => {
   });
 });
 
-/* ✅ VERIFY OTP */
 router.post("/verify-otp", (req, res) => {
   const { email, phone, otp } = req.body;
-
   const identifier = phone || email;
   const stored = otpStore.get(identifier);
-
+  
   if (stored && stored.otp === otp) {
     otpStore.delete(identifier);
     return res.json({ success: true });
   }
-
+  
   res.json({ success: false });
 });
 

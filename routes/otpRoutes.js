@@ -3,46 +3,50 @@ import nodemailer from "nodemailer";
 import fetch from "node-fetch";
 
 const router = express.Router();
-
 const otpStore = new Map();
 
 /* 🧹 CLEANUP */
 setInterval(() => {
   const now = Date.now();
-  for (const [key, value] of otpStore.entries()) {
-    if (now - value.timestamp > 5 * 60 * 1000) {
-      otpStore.delete(key);
-    }
+  for (const [k, v] of otpStore.entries()) {
+    if (now - v.timestamp > 5 * 60 * 1000) otpStore.delete(k);
   }
 }, 5 * 60 * 1000);
 
-/* 🔥 GMAIL SMTP (HARD FIX CONFIG) */
+/* 🔥 FORCE IPv4 (important for Render) */
+import dns from "dns";
+dns.setDefaultResultOrder("ipv4first");
+
+/* 🔥 GMAIL SMTP HARD FIX */
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
 
-  port: 465,          // 🔥 SSL PORT
-  secure: true,       // 🔥 MUST TRUE
+  port: 587,          // 465 try मत कर पहले
+  secure: false,
 
   auth: {
     user: process.env.EMAIL,
     pass: process.env.PASS // 🔑 App Password
   },
 
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
+  requireTLS: true,
 
   tls: {
-    rejectUnauthorized: false
-  }
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2"
+  },
+
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000
 });
 
 /* 🔍 VERIFY */
-transporter.verify((err, success) => {
+transporter.verify((err) => {
   if (err) {
     console.log("❌ SMTP ERROR 👉", err);
   } else {
-    console.log("✅ SMTP READY");
+    console.log("✅ SMTP READY (GMAIL)");
   }
 });
 
@@ -86,10 +90,10 @@ router.post("/send-otp", async (req, res) => {
     }
   }
 
-  /* 📧 EMAIL FALLBACK */
+  /* 📧 EMAIL FALLBACK (GMAIL) */
   if (!smsOk && email) {
     try {
-      console.log("📧 Sending EMAIL OTP...");
+      console.log("📧 Sending EMAIL OTP (GMAIL)...");
 
       const info = await transporter.sendMail({
         from: `"StudyElite" <${process.env.EMAIL}>`,
@@ -128,5 +132,4 @@ router.post("/verify-otp", (req, res) => {
   res.json({ success: false });
 });
 
-/* 🔥 IMPORTANT FIX */
 export default router;

@@ -1,13 +1,8 @@
 import express from "express";
-import nodemailer from "nodemailer";
 import fetch from "node-fetch";
-import dns from "dns";
 
 const router = express.Router();
 const otpStore = new Map();
-
-/* 🔥 FORCE IPv4 (Render fix) */
-dns.setDefaultResultOrder("ipv4first");
 
 /* 🧹 CLEANUP */
 setInterval(() => {
@@ -18,40 +13,6 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000);
-
-/* 🔥 GMAIL SMTP CONFIG */
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,              // 587 is more stable than 465 on cloud
-  secure: false,
-
-  auth: {
-    user: process.env.EMAIL,
-    pass: process.env.PASS // 🔑 App Password (not normal password)
-  },
-
-  requireTLS: true,
-
-  tls: {
-    rejectUnauthorized: false,
-    minVersion: "TLSv1.2"
-  },
-
-  family: 4, // IPv4
-
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000
-});
-
-/* 🔍 VERIFY SMTP */
-transporter.verify((err) => {
-  if (err) {
-    console.log("❌ SMTP ERROR 👉", err.message);
-  } else {
-    console.log("✅ SMTP READY (GMAIL)");
-  }
-});
 
 /* 🚀 SEND OTP */
 router.post("/send-otp", async (req, res) => {
@@ -91,23 +52,26 @@ router.post("/send-otp", async (req, res) => {
     }
   }
 
-  /* 📧 EMAIL FALLBACK (GMAIL SMTP) */
+  /* 📧 EMAIL FALLBACK (SUPABASE) */
   if (!smsOk && email) {
     try {
-      console.log("📧 Sending EMAIL OTP...");
+      console.log("📧 Sending via Supabase...");
 
-      const info = await transporter.sendMail({
-        from: `"StudyElite" <${process.env.EMAIL}>`,
-        to: email,
-        subject: "Your OTP Code",
-        html: `<h2>${otp}</h2><p>Valid for 5 minutes</p>`
+      const supabase = req.app.locals.supabaseAdmin;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email
       });
 
-      console.log("✅ EMAIL SENT 👉", info.response);
-      emailOk = true;
+      if (error) {
+        console.log("❌ SUPABASE ERROR 👉", error.message);
+      } else {
+        console.log("✅ EMAIL SENT (SUPABASE)");
+        emailOk = true;
+      }
 
     } catch (err) {
-      console.log("❌ MAIL ERROR 👉", err.message);
+      console.log("❌ EMAIL ERROR 👉", err.message);
     }
   }
 
@@ -119,18 +83,27 @@ router.post("/send-otp", async (req, res) => {
 });
 
 /* ✅ VERIFY OTP */
-router.post("/verify-otp", (req, res) => {
-  const { phone, email, otp } = req.body;
+router.post("/verify-otp", async (req, res) => {
+  const { email, otp } = req.body;
 
-  const key = phone || email;
-  const stored = otpStore.get(key);
+  try {
+    const supabase = req.app.locals.supabaseAdmin;
 
-  if (stored && stored.otp === otp) {
-    otpStore.delete(key);
-    return res.json({ success: true });
+    const { error } = await supabase.auth.verifyOtp({
+      email,
+      token: otp,
+      type: "email"
+    });
+
+    if (error) {
+      return res.json({ success: false });
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    res.json({ success: false });
   }
-
-  res.json({ success: false });
 });
 
 export default router;

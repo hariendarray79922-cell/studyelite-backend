@@ -7,141 +7,78 @@ const router = express.Router();
 const otpStore = new Map();
 const rateLimit = new Map();
 
-/* 🧹 CLEANUP */
+// Cleanup every 5 minutes
 setInterval(() => {
   const now = Date.now();
-
   for (const [key, value] of otpStore.entries()) {
-    if (now - value.timestamp > 5 * 60 * 1000) {
-      otpStore.delete(key);
-    }
+    if (now - value.timestamp > 5 * 60 * 1000) otpStore.delete(key);
   }
-
   for (const [key, value] of rateLimit.entries()) {
-    if (now - value > 60 * 60 * 1000) {
-      rateLimit.delete(key);
-    }
+    if (now - value > 60 * 60 * 1000) rateLimit.delete(key);
   }
 }, 5 * 60 * 1000);
 
-/* ⚡ RATE LIMIT */
 function checkRateLimit(identifier) {
   const now = Date.now();
   const attempts = rateLimit.get(identifier) || [];
-
   const recent = attempts.filter(t => now - t < 60 * 1000);
-
   if (recent.length >= 3) return false;
-
   recent.push(now);
   rateLimit.set(identifier, recent);
-
   return true;
 }
 
-/* 🚀 SEND OTP */
 router.post("/send-otp", async (req, res) => {
-  const { email, phone, resend } = req.body;
+  const { email, phone } = req.body;
   const identifier = phone || email;
 
-  console.log("📩 REQUEST 👉", { phone, email, resend });
-
-  if (!phone && !email) {
-    return res.json({ success: false });
-  }
-
+  if (!phone && !email) return res.json({ success: false });
   if (!checkRateLimit(identifier)) {
     return res.status(429).json({ success: false, error: "Too many attempts" });
   }
 
-  /* 🔐 OTP GENERATE / REUSE */
-  let otp;
-  const existing = otpStore.get(identifier);
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  otpStore.set(identifier, { otp, timestamp: Date.now() });
+  console.log("OTP 👉", otp);
 
-  if (resend && existing && (Date.now() - existing.timestamp < 5 * 60 * 1000)) {
-    otp = existing.otp;
-  } else {
-    otp = Math.floor(1000 + Math.random() * 9000).toString();
-    otpStore.set(identifier, { otp, timestamp: Date.now() });
-  }
+  let smsOk = false, emailOk = false;
 
-  console.log("🔑 OTP 👉", otp);
-
-  let smsOk = false;
-  let emailOk = false;
-
-  /* =========================
-     📱 SMS TRY (ONLY FIRST TIME)
-  ========================== */
-  if (phone && !resend) {
+  if (phone) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 4000);
-
       const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          number: phone,
-          message: `Your OTP is ${otp}`
-        }),
+        body: JSON.stringify({ number: phone, message: `Your OTP is ${otp}` }),
         signal: controller.signal
       });
-
       clearTimeout(timeout);
-
-      smsOk = smsRes.ok;
-
-      console.log("📲 SMS STATUS 👉", smsOk);
-
-    } catch (err) {
-      console.log("❌ SMS ERROR 👉", err.message);
-    }
+      if (smsRes.ok) smsOk = true;
+    } catch (err) { console.log("SMS ERROR"); }
   }
 
-  /* =========================
-     📧 EMAIL FALLBACK / RESEND
-  ========================== */
-  if ((resend || !smsOk) && email) {
+  if (!smsOk && email) {
     try {
-      console.log("📧 Sending EMAIL OTP...");
-
       const transporter = nodemailer.createTransport({
         service: "gmail",
-        auth: {
-          user: process.env.EMAIL,
-          pass: process.env.PASS
-        }
+        auth: { user: process.env.EMAIL, pass: process.env.PASS }
       });
-
-      const info = await transporter.sendMail({
+      await transporter.sendMail({
         from: `"StudyElite" <${process.env.EMAIL}>`,
         to: email,
         subject: "Your OTP Code",
-        html: `<h1>${otp}</h1><p>This OTP is valid for 5 minutes.</p>`
+        html: `<h1>${otp}</h1>`
       });
-
-      console.log("✅ EMAIL SENT 👉", info.response);
-
       emailOk = true;
-
-    } catch (err) {
-      console.log("❌ MAIL ERROR 👉", err.message);
-    }
+    } catch (err) { console.log("MAIL ERROR"); }
   }
 
-  /* 🚀 RESPONSE */
-  res.json({
-    success: smsOk || emailOk,
-    sms: smsOk,
-    email: emailOk
-  });
+  res.json({ success: smsOk || emailOk, sms: smsOk, email: emailOk });
 });
 
-/* ✅ VERIFY OTP */
 router.post("/verify-otp", (req, res) => {
   const { email, phone, otp } = req.body;
-
   const identifier = phone || email;
   const stored = otpStore.get(identifier);
 
@@ -149,7 +86,6 @@ router.post("/verify-otp", (req, res) => {
     otpStore.delete(identifier);
     return res.json({ success: true });
   }
-
   res.json({ success: false });
 });
 

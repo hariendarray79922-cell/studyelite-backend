@@ -16,24 +16,28 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-/* 🔥 GMAIL SMTP CONFIG */
+/* 🔥 GMAIL SMTP (HARD FIX CONFIG) */
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 587,
-  secure: false, // ❗ important
+
+  port: 465,          // 🔥 SSL PORT
+  secure: true,       // 🔥 MUST TRUE
+
   auth: {
-    user: process.env.EMAIL, // Gmail
-    pass: process.env.PASS   // App Password
+    user: process.env.EMAIL,
+    pass: process.env.PASS // 🔑 App Password
   },
+
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
+
   tls: {
     rejectUnauthorized: false
-  },
-  connectionTimeout: 20000,
-  greetingTimeout: 15000,
-  socketTimeout: 20000
+  }
 });
 
-/* 🔍 VERIFY SMTP */
+/* 🔍 VERIFY */
 transporter.verify((err, success) => {
   if (err) {
     console.log("❌ SMTP ERROR 👉", err);
@@ -95,7 +99,6 @@ router.post("/send-otp", async (req, res) => {
       });
 
       console.log("✅ EMAIL SENT 👉", info.response);
-
       emailOk = true;
 
     } catch (err) {
@@ -125,4 +128,5 @@ router.post("/verify-otp", (req, res) => {
   res.json({ success: false });
 });
 
+/* 🔥 IMPORTANT FIX */
 export default router;

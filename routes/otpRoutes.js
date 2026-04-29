@@ -28,21 +28,78 @@ function checkRateLimit(identifier) {
   return true;
 }
 
-router.post("/send-otp", async (req, res) => {
-  const { email, phone } = req.body;
-  const identifier = phone || email;
+// 🔥 CHECK IF USER IS BLOCKED
+async function isUserBlocked(phone, email, supabaseAdmin) {
+  if (!supabaseAdmin) return false;
+  
+  try {
+    // Check by phone
+    if (phone) {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("is_blocked, blocked_reason")
+        .eq("phone", phone)
+        .maybeSingle();
+      
+      if (data && data.is_blocked === true) {
+        return { blocked: true, reason: data.blocked_reason || "Account blocked by admin" };
+      }
+    }
+    
+    // Check by email
+    if (email) {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("is_blocked, blocked_reason")
+        .eq("email", email)
+        .maybeSingle();
+      
+      if (data && data.is_blocked === true) {
+        return { blocked: true, reason: data.blocked_reason || "Account blocked by admin" };
+      }
+    }
+    
+    return { blocked: false };
+  } catch (err) {
+    console.error("Block check error:", err);
+    return { blocked: false };
+  }
+}
 
-  if (!phone && !email) return res.json({ success: false });
-  if (!checkRateLimit(identifier)) {
-    return res.status(429).json({ success: false, error: "Too many attempts" });
+router.post("/send-otp", async (req, res) => {
+  const { email, phone, resend } = req.body;
+  const identifier = phone || email;
+  const supabaseAdmin = req.app.locals.supabaseAdmin;
+
+  if (!phone && !email) {
+    return res.json({ success: false, error: "No contact info" });
+  }
+
+  // 🔥 CHECK IF USER IS BLOCKED
+  const blockCheck = await isUserBlocked(phone, email, supabaseAdmin);
+  if (blockCheck.blocked) {
+    return res.status(403).json({ 
+      success: false, 
+      error: blockCheck.reason,
+      blocked: true 
+    });
+  }
+
+  // Rate limit check (skip for resend? optional)
+  if (!resend && !checkRateLimit(identifier)) {
+    return res.status(429).json({ 
+      success: false, 
+      error: "Too many attempts. Please wait 1 minute." 
+    });
   }
 
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   otpStore.set(identifier, { otp, timestamp: Date.now() });
-  console.log("OTP 👉", otp);
+  console.log("OTP 👉", otp, "for:", identifier);
 
   let smsOk = false, emailOk = false;
 
+  // SMS attempt
   if (phone) {
     try {
       const controller = new AbortController();
@@ -55,9 +112,10 @@ router.post("/send-otp", async (req, res) => {
       });
       clearTimeout(timeout);
       if (smsRes.ok) smsOk = true;
-    } catch (err) { console.log("SMS ERROR"); }
+    } catch (err) { console.log("SMS ERROR:", err.message); }
   }
 
+  // Email fallback
   if (!smsOk && email) {
     try {
       const transporter = nodemailer.createTransport({
@@ -68,25 +126,41 @@ router.post("/send-otp", async (req, res) => {
         from: `"StudyElite" <${process.env.EMAIL}>`,
         to: email,
         subject: "Your OTP Code",
-        html: `<h1>${otp}</h1>`
+        html: `<h1>${otp}</h1><p>This OTP is valid for 5 minutes.</p>`
       });
       emailOk = true;
-    } catch (err) { console.log("MAIL ERROR"); }
+    } catch (err) { console.log("MAIL ERROR:", err.message); }
   }
 
-  res.json({ success: smsOk || emailOk, sms: smsOk, email: emailOk });
+  res.json({ 
+    success: smsOk || emailOk, 
+    sms: smsOk, 
+    email: emailOk,
+    blocked: false
+  });
 });
 
-router.post("/verify-otp", (req, res) => {
+router.post("/verify-otp", async (req, res) => {
   const { email, phone, otp } = req.body;
   const identifier = phone || email;
+  const supabaseAdmin = req.app.locals.supabaseAdmin;
   const stored = otpStore.get(identifier);
+
+  // 🔥 CHECK BLOCK STATUS AGAIN
+  const blockCheck = await isUserBlocked(phone, email, supabaseAdmin);
+  if (blockCheck.blocked) {
+    return res.status(403).json({ 
+      success: false, 
+      error: blockCheck.reason,
+      blocked: true 
+    });
+  }
 
   if (stored && stored.otp === otp) {
     otpStore.delete(identifier);
     return res.json({ success: true });
   }
-  res.json({ success: false });
+  res.json({ success: false, error: "Invalid OTP" });
 });
 
 export default router;

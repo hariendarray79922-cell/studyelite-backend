@@ -52,36 +52,47 @@ if (resend && existing && (Date.now() - existing.timestamp) < 5 * 60 * 1000) {
 
   let smsOk = false, emailOk = false;
 
-  if (phone && !resend) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
-      const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number: phone, message: `Your OTP is ${otp}` }),
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
-      if (smsRes.ok) smsOk = true;
-    } catch (err) { console.log("SMS ERROR"); }
-  }
+  // 🔥 FAST SMS TRY (max 1.5s wait)
+if (phone && !resend) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500); // ⏱ 1.5s
 
-  if ((resend || !smsOk) && email) {
-    try {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: { user: process.env.EMAIL, pass: process.env.PASS }
-      });
-      await transporter.sendMail({
-        from: `"StudyElite" <${process.env.EMAIL}>`,
-        to: email,
-        subject: "Your OTP Code",
-        html: `<h1>${otp}</h1>`
-      });
-      emailOk = true;
-    } catch (err) { console.log("MAIL ERROR"); }
+    const smsPromise = fetch("https://sms.studyelite.shop/send-sms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number: phone, message: `Your OTP is ${otp}` }),
+      signal: controller.signal
+    }).then(r => r.ok).catch(() => false);
+
+    smsOk = await smsPromise;   // max 1.5s ही रुकेगा
+    clearTimeout(timeout);
+
+  } catch (err) {
+    smsOk = false;
   }
+}
+
+  // 🔥 fallback OR resend → email
+if ((resend || !smsOk) && email) {
+  try {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: process.env.EMAIL, pass: process.env.PASS }
+    });
+
+    await transporter.sendMail({
+      from: `"StudyElite" <${process.env.EMAIL}>`,
+      to: email,
+      subject: "Your OTP Code",
+      html: `<h1>${otp}</h1>`
+    });
+
+    emailOk = true;
+  } catch (err) {
+    console.log("MAIL ERROR");
+  }
+}
 
   res.json({ success: smsOk || emailOk, sms: smsOk, email: emailOk });
 });

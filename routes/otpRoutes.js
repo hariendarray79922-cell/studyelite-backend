@@ -1,10 +1,61 @@
+import express from "express";
+import nodemailer from "nodemailer";
 import fetch from "node-fetch";
 
+const router = express.Router();
+
+const otpStore = new Map();
+
+/* 🧹 CLEANUP */
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of otpStore.entries()) {
+    if (now - value.timestamp > 5 * 60 * 1000) {
+      otpStore.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+/* 🔥 GMAIL SMTP CONFIG */
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false, // ❗ important
+  auth: {
+    user: process.env.EMAIL, // Gmail
+    pass: process.env.PASS   // App Password
+  },
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 20000,
+  greetingTimeout: 15000,
+  socketTimeout: 20000
+});
+
+/* 🔍 VERIFY SMTP */
+transporter.verify((err, success) => {
+  if (err) {
+    console.log("❌ SMTP ERROR 👉", err);
+  } else {
+    console.log("✅ SMTP READY");
+  }
+});
+
+/* 🚀 SEND OTP */
 router.post("/send-otp", async (req, res) => {
   const { phone, email } = req.body;
 
+  console.log("📩 REQUEST 👉", { phone, email });
+
+  if (!phone && !email) {
+    return res.json({ success: false });
+  }
+
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  otpStore.set(phone || email, { otp, timestamp: Date.now() });
+  const key = phone || email;
+
+  otpStore.set(key, { otp, timestamp: Date.now() });
 
   console.log("🔑 OTP 👉", otp);
 
@@ -27,31 +78,28 @@ router.post("/send-otp", async (req, res) => {
       console.log("📲 SMS STATUS 👉", smsOk);
 
     } catch (err) {
-      console.log("❌ SMS ERROR");
+      console.log("❌ SMS ERROR 👉", err.message);
     }
   }
 
-  /* 📧 EMAIL (SUPABASE FALLBACK STYLE) */
+  /* 📧 EMAIL FALLBACK */
   if (!smsOk && email) {
     try {
-      console.log("📧 Sending EMAIL via Supabase style...");
+      console.log("📧 Sending EMAIL OTP...");
 
-      await fetch("https://pouoldwsnvuabvelilhj.supabase.co/auth/v1/otp", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": "YOUR_ANON_KEY"
-        },
-        body: JSON.stringify({
-          email: email,
-          data: { otp } // optional
-        })
+      const info = await transporter.sendMail({
+        from: `"StudyElite" <${process.env.EMAIL}>`,
+        to: email,
+        subject: "Your OTP Code",
+        html: `<h2>${otp}</h2><p>Valid for 5 minutes</p>`
       });
+
+      console.log("✅ EMAIL SENT 👉", info.response);
 
       emailOk = true;
 
     } catch (err) {
-      console.log("❌ EMAIL ERROR");
+      console.log("❌ MAIL ERROR 👉", err);
     }
   }
 
@@ -61,3 +109,20 @@ router.post("/send-otp", async (req, res) => {
     email: emailOk
   });
 });
+
+/* ✅ VERIFY OTP */
+router.post("/verify-otp", (req, res) => {
+  const { phone, email, otp } = req.body;
+
+  const key = phone || email;
+  const stored = otpStore.get(key);
+
+  if (stored && stored.otp === otp) {
+    otpStore.delete(key);
+    return res.json({ success: true });
+  }
+
+  res.json({ success: false });
+});
+
+export default router;

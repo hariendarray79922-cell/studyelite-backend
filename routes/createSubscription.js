@@ -44,15 +44,15 @@ router.post("/", async (req, res) => {
     const TRIAL_AMOUNT = 2;
     const trialDays = app.trial_days || 7;
 
-    // 3. 🔥 FIX: start_at should be FUTURE time (current time + 5 minutes)
-    const startAt = Math.floor(Date.now() / 1000) + 300; // 5 minutes from now
+    // 🔥 FIX: Start at TOMORROW (24 hours from now) - avoids "same day" display issue
+    const startAt = Math.floor(Date.now() / 1000) + (24 * 60 * 60); // 24 hours from now
 
     // Create Razorpay subscription
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
       total_count: 1,
-      start_at: startAt,  // ✅ FUTURE time
+      start_at: startAt,
       addons: [
         {
           item: {
@@ -65,8 +65,9 @@ router.post("/", async (req, res) => {
     });
 
     console.log("✅ Razorpay subscription created:", subscription.id);
+    console.log(`📅 Subscription starts at: ${new Date(startAt * 1000).toISOString()}`);
 
-    // 4. 🔥 FIX: Remove updated_at column (since it doesn't exist)
+    // 4. Database operations
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -82,8 +83,8 @@ router.post("/", async (req, res) => {
         .update({
           status: "pending",
           amount: TRIAL_AMOUNT,
-          razorpay_subscription_id: subscription.id
-          // ❌ REMOVED: updated_at: new Date()
+          razorpay_subscription_id: subscription.id,
+          razorpay_subscription_start_at: new Date(startAt * 1000).toISOString()
         })
         .eq("id", existingRow.id);
     } else {
@@ -95,8 +96,8 @@ router.post("/", async (req, res) => {
           app_id: app_id,
           status: "pending",
           amount: TRIAL_AMOUNT,
-          razorpay_subscription_id: subscription.id
-          // ❌ REMOVED: created_at, updated_at (database will handle defaults)
+          razorpay_subscription_id: subscription.id,
+          razorpay_subscription_start_at: new Date(startAt * 1000).toISOString()
         });
     }
 
@@ -112,7 +113,8 @@ router.post("/", async (req, res) => {
       key: process.env.RAZORPAY_KEY_ID,
       subscription_id: subscription.id,
       amount: TRIAL_AMOUNT,
-      trial_days: trialDays
+      trial_days: trialDays,
+      start_at: startAt
     });
 
   } catch (err) {

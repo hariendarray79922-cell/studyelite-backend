@@ -15,7 +15,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 
-// 🔥 Supabase Admin
+// Supabase Admin
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -29,7 +29,7 @@ app.use("/webhook", express.raw({ type: "application/json" }), webhook);
 // JSON parser
 app.use(express.json());
 
-// ✅ OTP ROUTES FIX
+// ✅ OTP ROUTES
 app.use("/api", otpRoutes);
 
 // ✅ PAYMENT ROUTES

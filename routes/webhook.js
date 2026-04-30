@@ -50,15 +50,17 @@ export default async function webhook(req, res) {
         if (app) trialDays = app.trial_days || 7;
       }
       
-      const startDate = new Date();
-      const endDate = new Date();
+      // 🔥 FIX: CORRECT DATE CALCULATION
+      const now = new Date();
+      const startDate = now.toISOString().split('T')[0];  // YYYY-MM-DD
+      const endDate = new Date(now);
       endDate.setDate(endDate.getDate() + trialDays);
       
       await supabaseAdmin
         .from("subscriptions")
         .update({
           status: "trial",
-          start_date: startDate.toISOString().split('T')[0],
+          start_date: startDate,
           end_date: endDate.toISOString().split('T')[0],
           razorpay_payment_id: null,
           updated_at: new Date()
@@ -66,7 +68,7 @@ export default async function webhook(req, res) {
         .eq("razorpay_subscription_id", sub.id)
         .eq("status", "pending");
       
-      console.log(`✅ Trial started: ${sub.id} (${trialDays} days) ends on ${endDate.toISOString().split('T')[0]}`);
+      console.log(`✅ Trial started: ${sub.id} (${trialDays} days) from ${startDate} to ${endDate.toISOString().split('T')[0]}`);
     }
 
     // 🔥 PAYMENT CAPTURED → trial → active (for upfront payments)
@@ -98,45 +100,26 @@ export default async function webhook(req, res) {
         .eq("id", subscriptionRecord.app_id)
         .single();
       
-      const startDate = new Date();
-      let endDate = new Date();
+      // 🔥 FIX: CORRECT DATE CALCULATION
+      const now = new Date();
+      const startDate = now.toISOString().split('T')[0];
+      let endDate = new Date(now);
+      let newStatus = "";
       
-      // 🔥 FIX: Check if this is trial verification (₹2) or full payment
+      // Check if this is trial verification (₹2) or full payment
       const amountInRupees = payment.amount / 100;
       
       if (amountInRupees === 2) {
         // This is trial verification payment
         const trialDays = app?.trial_days || 7;
         endDate.setDate(endDate.getDate() + trialDays);
-        
-        await supabaseAdmin
-          .from("subscriptions")
-          .update({
-            status: "trial",
-            razorpay_payment_id: payment.id,
-            start_date: startDate.toISOString().split('T')[0],
-            end_date: endDate.toISOString().split('T')[0],
-            updated_at: new Date()
-          })
-          .eq("razorpay_subscription_id", payment.subscription_id);
-        
+        newStatus = "trial";
         console.log(`✅ Trial verification payment received: ${payment.id} (${trialDays} days trial)`);
       } 
       else if (amountInRupees >= 100) {
         // This is full payment (₹1499 or similar)
         endDate.setFullYear(endDate.getFullYear() + 1);
-        
-        await supabaseAdmin
-          .from("subscriptions")
-          .update({
-            status: "active",
-            razorpay_payment_id: payment.id,
-            start_date: startDate.toISOString().split('T')[0],
-            end_date: endDate.toISOString().split('T')[0],
-            updated_at: new Date()
-          })
-          .eq("razorpay_subscription_id", payment.subscription_id);
-        
+        newStatus = "active";
         console.log(`✅ Full payment captured: ${payment.id} (1 year valid till ${endDate.toISOString().split('T')[0]})`);
       } else {
         // Unknown amount
@@ -148,7 +131,19 @@ export default async function webhook(req, res) {
             updated_at: new Date()
           })
           .eq("razorpay_subscription_id", payment.subscription_id);
+        return res.json({ success: true });
       }
+      
+      await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          status: newStatus,
+          razorpay_payment_id: payment.id,
+          start_date: startDate,
+          end_date: endDate.toISOString().split('T')[0],
+          updated_at: new Date()
+        })
+        .eq("razorpay_subscription_id", payment.subscription_id);
     }
 
     // 🔥 SUBSCRIPTION CANCELLED

@@ -2,7 +2,7 @@
   "name": "studyelite-backend",
   "version": "1.0.0",
   "type": "module",
-  "description": "StudyElite Backend - OTP, SMS, Email, Subscriptions",
+  "description": "StudyElite Backend - OTP, SMS, Email, Subscriptions, Razorpay",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -14,9 +14,10 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "googleapis": "^128.0.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "razorpay": "^2.9.4"
   },
-  "keywords": ["otp", "sms", "email", "studyelite"],
+  "keywords": ["otp", "sms", "email", "razorpay", "studyelite"],
   "author": "StudyElite",
   "license": "MIT"
 }

@@ -2,14 +2,21 @@
   "name": "studyelite-backend",
   "version": "1.0.0",
   "type": "module",
+  "description": "StudyElite Backend - OTP, SMS, Email, Subscriptions",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "node --watch index.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "googleapis": "^128.0.0",
-    "node-fetch": "^3.3.2",
-    "dotenv": "^16.3.1",
-    "@supabase/supabase-js": "^2.45.0"
-  }
+    "node-fetch": "^3.3.2"
+  },
+  "keywords": ["otp", "sms", "email", "studyelite"],
+  "author": "StudyElite",
+  "license": "MIT"
 }

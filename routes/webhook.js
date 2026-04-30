@@ -1,5 +1,25 @@
 import crypto from "crypto";
 
+// 🔥 HELPER: Get IST timestamp
+function getISTTimestamp() {
+  const now = new Date();
+  // Convert to IST (UTC + 5:30)
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(now.getTime() + istOffset);
+  return istDate.toISOString();
+}
+
+// 🔥 HELPER: Add days to IST date
+function addDaysToIST(days) {
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(now.getTime() + istOffset);
+  istDate.setDate(istDate.getDate() + days);
+  // Convert back to UTC for storage (but keep time)
+  const utcDate = new Date(istDate.getTime() - istOffset);
+  return utcDate.toISOString();
+}
+
 export default async function webhook(req, res) {
   let supabaseAdmin = null;
   
@@ -49,26 +69,32 @@ export default async function webhook(req, res) {
         if (app) trialDays = app.trial_days || 7;
       }
       
-      // 🔥 FIX: FULL TIMESTAMP (not just date)
+      // 🔥 FIX: Use IST time for calculation
       const now = new Date();
-      const endDate = new Date(now);
-      endDate.setDate(endDate.getDate() + trialDays);
+      const istOffset = 5.5 * 60 * 60 * 1000;
+      const startIST = new Date(now.getTime() + istOffset);
+      const endIST = new Date(startIST);
+      endIST.setDate(endIST.getDate() + trialDays);
+      
+      // Store in UTC but with correct time
+      const startUTC = new Date(startIST.getTime() - istOffset);
+      const endUTC = new Date(endIST.getTime() - istOffset);
       
       await supabaseAdmin
         .from("subscriptions")
         .update({
           status: "trial",
-          start_date: now.toISOString(),        // ✅ Full timestamp
-          end_date: endDate.toISOString(),      // ✅ Full timestamp
+          start_date: startUTC.toISOString(),
+          end_date: endUTC.toISOString(),
           razorpay_payment_id: null,
-          updated_at: now.toISOString()
+          updated_at: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", sub.id)
         .eq("status", "pending");
       
       console.log(`✅ Trial started: ${sub.id} (${trialDays} days)`);
-      console.log(`   Start: ${now.toISOString()}`);
-      console.log(`   End: ${endDate.toISOString()}`);
+      console.log(`   Start (IST): ${startIST.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+      console.log(`   End (IST): ${endIST.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
     }
 
     // 🔥 PAYMENT CAPTURED
@@ -97,46 +123,52 @@ export default async function webhook(req, res) {
         .eq("id", subscriptionRecord.app_id)
         .single();
       
-      const now = new Date();
-      let endDate = new Date(now);
-      let newStatus = "";
       const amountInRupees = payment.amount / 100;
+      const istOffset = 5.5 * 60 * 60 * 1000;
+      const now = new Date();
+      const startIST = new Date(now.getTime() + istOffset);
+      let endIST = new Date(startIST);
+      let newStatus = "";
       
       if (amountInRupees === 2) {
         const trialDays = app?.trial_days || 7;
-        endDate.setDate(endDate.getDate() + trialDays);
+        endIST.setDate(endIST.getDate() + trialDays);
         newStatus = "trial";
+        console.log(`✅ Trial verification: ${payment.id} (${trialDays} days)`);
       } 
       else if (amountInRupees >= 100) {
-        endDate.setFullYear(endDate.getFullYear() + 1);
+        endIST.setFullYear(endIST.getFullYear() + 1);
         newStatus = "active";
+        console.log(`✅ Full payment: ${payment.id} (1 year)`);
       } else {
-        console.log(`⚠️ Unknown payment amount: ${amountInRupees}`);
+        console.log(`⚠️ Unknown amount: ${amountInRupees}`);
         await supabaseAdmin
           .from("subscriptions")
           .update({
             razorpay_payment_id: payment.id,
-            updated_at: now.toISOString()
+            updated_at: new Date().toISOString()
           })
           .eq("razorpay_subscription_id", payment.subscription_id);
         return res.json({ success: true });
       }
       
-      // 🔥 FIX: FULL TIMESTAMP
+      // Convert back to UTC for storage
+      const startUTC = new Date(startIST.getTime() - istOffset);
+      const endUTC = new Date(endIST.getTime() - istOffset);
+      
       await supabaseAdmin
         .from("subscriptions")
         .update({
           status: newStatus,
           razorpay_payment_id: payment.id,
-          start_date: now.toISOString(),
-          end_date: endDate.toISOString(),
-          updated_at: now.toISOString()
+          start_date: startUTC.toISOString(),
+          end_date: endUTC.toISOString(),
+          updated_at: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", payment.subscription_id);
       
-      console.log(`✅ ${newStatus} subscription: ${payment.id}`);
-      console.log(`   Start: ${now.toISOString()}`);
-      console.log(`   End: ${endDate.toISOString()}`);
+      console.log(`   Start (IST): ${startIST.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+      console.log(`   End (IST): ${endIST.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
     }
 
     // 🔥 SUBSCRIPTION CANCELLED
@@ -157,7 +189,7 @@ export default async function webhook(req, res) {
             updated_at: new Date().toISOString()
           })
           .eq("razorpay_subscription_id", sub.id);
-        console.log("🚫 Trial cancelled (no payment made)");
+        console.log("🚫 Trial cancelled (no payment)");
       } else {
         await supabaseAdmin
           .from("subscriptions")
@@ -166,7 +198,7 @@ export default async function webhook(req, res) {
             autopay_cancelled: true 
           })
           .eq("razorpay_subscription_id", sub.id);
-        console.log(`ℹ️ Paid user cancelled autopay, access till end_date`);
+        console.log(`ℹ️ AutoPay cancelled, access till end_date`);
       }
     }
 
@@ -181,7 +213,7 @@ export default async function webhook(req, res) {
         })
         .eq("razorpay_subscription_id", sub.id);
       
-      console.log(`✅ Subscription activated event: ${sub.id}`);
+      console.log(`✅ Subscription activated: ${sub.id}`);
     }
 
     res.json({ success: true });

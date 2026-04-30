@@ -7,7 +7,6 @@ const otpStore = new Map();
 // ============ SEND EMAIL VIA GMAIL API ============
 async function sendEmailViaGmailAPI(to, subject, htmlContent) {
   try {
-    // Get fresh access token using refresh token
     const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -26,7 +25,6 @@ async function sendEmailViaGmailAPI(to, subject, htmlContent) {
       return { success: false };
     }
     
-    // Create email message
     const messageParts = [];
     messageParts.push(`To: ${to}`);
     messageParts.push(`Subject: ${subject}`);
@@ -41,7 +39,6 @@ async function sendEmailViaGmailAPI(to, subject, htmlContent) {
       .replace(/\//g, '_')
       .replace(/=+$/, '');
     
-    // Send email via Gmail API
     const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
       method: "POST",
       headers: {
@@ -136,13 +133,11 @@ router.post("/send-otp", async (req, res) => {
     return res.json({ success: false, error: "No contact info" });
   }
 
-  // Check if user is blocked
   const blockCheck = await isUserBlocked(phone, email, supabaseAdmin);
   if (blockCheck.blocked) {
     return res.status(403).json({ success: false, error: "Account blocked", blocked: true });
   }
 
-  // Generate OTP
   let otp;
   const existing = otpStore.get(identifier);
   
@@ -158,25 +153,21 @@ router.post("/send-otp", async (req, res) => {
   let smsSent = false;
   let emailSent = false;
 
-  // Try SMS first
   if (phone) {
     smsSent = await sendSMS(phone, otp);
     console.log("📲 SMS:", smsSent ? "✅" : "❌");
   }
 
-  // If SMS failed or resend, try Email via Gmail API
   if ((!smsSent || resend) && email && process.env.GMAIL_REFRESH_TOKEN) {
     const htmlContent = `
       <!DOCTYPE html>
       <html>
       <head><meta charset="UTF-8"></head>
-      <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea, #764ba2);">
+      <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
         <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
-          <h2 style="color: #4f46e5; margin-bottom: 20px;">🔐 StudyElite</h2>
-          <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb; background: #f0f0ff; display: inline-block; padding: 15px 30px; border-radius: 12px; margin: 20px 0;">${otp}</h1>
-          <p style="color: #4b5563; font-size: 16px;">This OTP is valid for <strong>5 minutes</strong>.</p>
-          <hr style="margin: 25px 0; border: none; border-top: 1px solid #e5e7eb;">
-          <p style="color: #6b7280; font-size: 12px;">StudyElite - Secure Learning Platform</p>
+          <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
+          <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
+          <p>This OTP is valid for <strong>5 minutes</strong>.</p>
         </div>
       </body>
       </html>
@@ -201,4 +192,7 @@ router.post("/verify-otp", (req, res) => {
     return res.json({ success: true });
   }
   
-  res.json({ success: false, error
+  res.json({ success: false, error: "Invalid or expired OTP" });
+});
+
+export default router;

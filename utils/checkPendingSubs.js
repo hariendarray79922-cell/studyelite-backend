@@ -30,7 +30,6 @@ export async function checkPendingSubscriptions() {
           console.log("🔎 Subscription:", sub.razorpay_subscription_id, rpSub.status);
 
           if (sub.status === "pending" && rpSub.status === "authenticated") {
-            const now = new Date();
             const appId = sub.app_id;
             
             const { data: app } = await supabaseAdmin
@@ -40,17 +39,23 @@ export async function checkPendingSubscriptions() {
               .single();
             
             const trialDays = app?.trial_days || 7;
-            const endDate = new Date(now);
+            
+            // 🔥 REAL TIME - Use Razorpay's start_at
+            const razorpayStartAt = rpSub.start_at;
+            const startDate = new Date(razorpayStartAt * 1000);
+            const endDate = new Date(startDate);
             endDate.setDate(endDate.getDate() + trialDays);
             
-            // 🔥 FIX: FULL TIMESTAMP
+            console.log(`📅 Start Date (UTC): ${startDate.toISOString()}`);
+            console.log(`📅 End Date (UTC): ${endDate.toISOString()}`);
+            
             await supabaseAdmin
               .from("subscriptions")
               .update({
                 status: "trial",
-                start_date: now.toISOString(),
+                start_date: startDate.toISOString(),
                 end_date: endDate.toISOString(),
-                updated_at: now.toISOString()
+                updated_at: new Date().toISOString()
               })
               .eq("id", sub.id);
             console.log(`✅ Trial started via checker: ${sub.id}`);

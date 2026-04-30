@@ -15,7 +15,6 @@ router.post("/", async (req, res) => {
 
     console.log("📥 Request received:", { app_id, user_id });
 
-    // 1. Get app details
     const { data: app, error: appError } = await supabaseAdmin
       .from("apps")
       .select("*")
@@ -28,7 +27,6 @@ router.post("/", async (req, res) => {
 
     console.log("✅ App found:", app.app_name);
 
-    // 2. Check existing active subscription
     const { data: activeSub } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -44,10 +42,9 @@ router.post("/", async (req, res) => {
     const TRIAL_AMOUNT = 2;
     const trialDays = app.trial_days || 7;
 
-    // 🔥 FIX: Start at TOMORROW (24 hours from now) - avoids "same day" display issue
-    const startAt = Math.floor(Date.now() / 1000) + (24 * 60 * 60); // 24 hours from now
+    // 🔥 Start at TOMORROW (24 hours from now) - avoids "same day" display issue
+    const startAt = Math.floor(Date.now() / 1000) + (24 * 60 * 60);
 
-    // Create Razorpay subscription
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
@@ -65,9 +62,14 @@ router.post("/", async (req, res) => {
     });
 
     console.log("✅ Razorpay subscription created:", subscription.id);
-    console.log(`📅 Subscription starts at: ${new Date(startAt * 1000).toISOString()}`);
+    
+    // 🔥 REAL TIME - Current timestamp with milliseconds
+    const currentTimestamp = new Date().toISOString();
+    const subscriptionStartTimestamp = new Date(startAt * 1000).toISOString();
+    
+    console.log(`📅 Current Time (UTC): ${currentTimestamp}`);
+    console.log(`📅 Subscription Start (UTC): ${subscriptionStartTimestamp}`);
 
-    // 4. Database operations
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -84,7 +86,8 @@ router.post("/", async (req, res) => {
           status: "pending",
           amount: TRIAL_AMOUNT,
           razorpay_subscription_id: subscription.id,
-          razorpay_subscription_start_at: new Date(startAt * 1000).toISOString()
+          razorpay_subscription_start_at: subscriptionStartTimestamp,
+          updated_at: currentTimestamp
         })
         .eq("id", existingRow.id);
     } else {
@@ -97,7 +100,9 @@ router.post("/", async (req, res) => {
           status: "pending",
           amount: TRIAL_AMOUNT,
           razorpay_subscription_id: subscription.id,
-          razorpay_subscription_start_at: new Date(startAt * 1000).toISOString()
+          razorpay_subscription_start_at: subscriptionStartTimestamp,
+          created_at: currentTimestamp,
+          updated_at: currentTimestamp
         });
     }
 

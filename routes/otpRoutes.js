@@ -1,103 +1,82 @@
 import express from "express";
+import nodemailer from "nodemailer";
 import fetch from "node-fetch";
 
 const router = express.Router();
+const otpStore = new Map(); // Better than object
 
-/* 🚀 SEND OTP */
+// Clean up old OTPs every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of otpStore.entries()) {
+    if (now - value.timestamp > 5 * 60 * 1000) {
+      otpStore.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
 router.post("/send-otp", async (req, res) => {
-  const { phone, email } = req.body;
-
-  console.log("📩 REQUEST 👉", { phone, email });
+  const { email, phone } = req.body;
 
   if (!phone && !email) {
-    return res.json({ success: false, error: "No input" });
+    return res.json({ success: false });
   }
 
-  let smsOk = false;
-  let method = "";
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const identifier = phone || email;
 
-  /* =========================
-     📱 SMS TRY
-  ========================== */
+  otpStore.set(identifier, { otp, timestamp: Date.now() });
+  console.log("OTP 👉", otp);
+
+  let smsOk = false, emailOk = false;
+
+  // SMS attempt
   if (phone) {
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
       const smsRes = await fetch("https://sms.studyelite.shop/send-sms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          number: phone,
-          message: `Your OTP is being sent...`
-        })
+        body: JSON.stringify({ number: phone, message: `Your OTP is ${otp}` }),
+        signal: controller.signal
       });
-
-      smsOk = smsRes.ok;
-
-      console.log("📲 SMS STATUS 👉", smsOk);
-
-      if (smsOk) {
-        method = "sms";
-        return res.json({ success: true, method });
-      }
-
-    } catch (err) {
-      console.log("❌ SMS ERROR 👉", err.message);
-    }
+      clearTimeout(timeout);
+      const smsData = await smsRes.json();
+      if (smsRes.ok && smsData.success) smsOk = true;
+    } catch (err) { console.log("SMS ERROR:", err.message); }
   }
 
-  /* =========================
-     📧 EMAIL FALLBACK (SUPABASE)
-  ========================== */
-  if (email) {
+  // Email fallback
+  if (!smsOk && email) {
     try {
-      const supabase = req.app.locals.supabaseAdmin;
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: { user: process.env.EMAIL, pass: process.env.PASS }
       });
-
-      if (error) {
-        console.log("❌ EMAIL ERROR 👉", error.message);
-        return res.json({ success: false });
-      }
-
-      console.log("✅ EMAIL OTP SENT");
-      method = "email";
-
-      return res.json({ success: true, method });
-
-    } catch (err) {
-      console.log("❌ EMAIL ERROR 👉", err.message);
-      return res.json({ success: false });
-    }
+      await transporter.sendMail({
+        from: `"StudyElite" <${process.env.EMAIL}>`,
+        to: email,
+        subject: "Your OTP Code",
+        html: `<h1>${otp}</h1>`
+      });
+      emailOk = true;
+    } catch (err) { console.log("MAIL ERROR:", err.message); }
   }
 
-  res.json({ success: false });
+  res.json({ success: smsOk || emailOk, sms: smsOk, email: emailOk });
 });
 
-/* 🔐 VERIFY OTP */
-router.post("/verify-otp", async (req, res) => {
-  const { email, otp } = req.body;
+router.post("/verify-otp", (req, res) => {
+  const { email, phone, otp } = req.body;
+  const identifier = phone || email;
+  const stored = otpStore.get(identifier);
 
-  try {
-    const supabase = req.app.locals.supabaseAdmin;
-
-    const { error } = await supabase.auth.verifyOtp({
-      email,
-      token: otp,
-      type: "email"
-    });
-
-    if (error) {
-      console.log("❌ VERIFY ERROR 👉", error.message);
-      return res.json({ success: false });
-    }
-
-    console.log("✅ VERIFIED");
-    res.json({ success: true });
-
-  } catch (err) {
-    res.json({ success: false });
+  if (stored && stored.otp === otp) {
+    otpStore.delete(identifier);
+    return res.json({ success: true });
   }
+  res.json({ success: false });
 });
 
 export default router;

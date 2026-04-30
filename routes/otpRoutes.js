@@ -1,38 +1,32 @@
 import express from "express";
 import nodemailer from "nodemailer";
 import fetch from "node-fetch";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const router = express.Router();
+
 const otpStore = new Map();
+const rateLimit = new Map();
 
-// Clean up old OTPs every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of otpStore.entries()) {
-    if (now - value.timestamp > 5 * 60 * 1000) {
-      otpStore.delete(key);
-    }
-  }
-}, 5 * 60 * 1000);
-
-// 🔥 FIXED TRANSPORTER with correct settings
+// 🔥 BREVO SMTP CONFIGURATION
 let transporter = null;
 
 function initTransporter() {
-  if (!process.env.EMAIL || !process.env.PASS) {
-    console.log("⚠️ Email credentials missing");
+  if (!process.env.BREVO_EMAIL || !process.env.BREVO_SMTP_KEY) {
+    console.log("⚠️ Brevo credentials missing. Email disabled.");
     return;
   }
   
   transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,  // SSL
+    host: "smtp-relay.sendinblue.com",
+    port: 587,
+    secure: false,  // TLS
     auth: {
-      user: process.env.EMAIL,
-      pass: process.env.PASS  // Must be App Password (16 chars)
+      user: process.env.BREVO_EMAIL,
+      pass: process.env.BREVO_SMTP_KEY
     },
-    // Timeouts
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 10000
@@ -41,32 +35,98 @@ function initTransporter() {
   // Verify connection
   transporter.verify((error, success) => {
     if (error) {
-      console.log("❌ Gmail Error:", error.message);
-      console.log("💡 Solution: Use App Password instead of regular password");
+      console.log("❌ Brevo Error:", error.message);
     } else {
-      console.log("✅ Gmail ready");
+      console.log("✅ Brevo SMTP ready (Free: 300 emails/day, Paid: 1000+/day)");
     }
   });
 }
 
 initTransporter();
 
+// Cleanup every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of otpStore.entries()) {
+    if (now - value.timestamp > 5 * 60 * 1000) otpStore.delete(key);
+  }
+  for (const [key, value] of rateLimit.entries()) {
+    if (now - value > 60 * 60 * 1000) rateLimit.delete(key);
+  }
+}, 5 * 60 * 1000);
+
+function checkRateLimit(identifier) {
+  const now = Date.now();
+  const attempts = rateLimit.get(identifier) || [];
+  const recent = attempts.filter(t => now - t < 60 * 1000);
+  if (recent.length >= 3) return false;
+  recent.push(now);
+  rateLimit.set(identifier, recent);
+  return true;
+}
+
+async function isUserBlocked(phone, email, supabaseAdmin) {
+  if (!supabaseAdmin) return { blocked: false };
+  try {
+    if (phone) {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("is_blocked")
+        .eq("phone", phone)
+        .maybeSingle();
+      if (data?.is_blocked === true) return { blocked: true };
+    }
+    if (email) {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("is_blocked")
+        .eq("email", email)
+        .maybeSingle();
+      if (data?.is_blocked === true) return { blocked: true };
+    }
+  } catch (err) {
+    console.error("Block check error:", err);
+  }
+  return { blocked: false };
+}
+
 router.post("/send-otp", async (req, res) => {
-  const { email, phone } = req.body;
+  const { email, phone, resend } = req.body;
+  const identifier = phone || email;
+  const supabaseAdmin = req.app.locals.supabaseAdmin;
 
   if (!phone && !email) {
     return res.json({ success: false, error: "No contact info" });
   }
 
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  const identifier = phone || email;
+  // Block check
+  const blockCheck = await isUserBlocked(phone, email, supabaseAdmin);
+  if (blockCheck.blocked) {
+    return res.status(403).json({ success: false, error: "Account blocked", blocked: true });
+  }
 
-  otpStore.set(identifier, { otp, timestamp: Date.now() });
+  // Rate limit
+  if (!resend && !checkRateLimit(identifier)) {
+    return res.status(429).json({ success: false, error: "Too many attempts. Please wait 1 minute." });
+  }
+
+  // Generate OTP
+  let otp;
+  const existing = otpStore.get(identifier);
+  
+  if (resend && existing && (Date.now() - existing.timestamp < 5 * 60 * 1000)) {
+    otp = existing.otp;
+  } else {
+    otp = Math.floor(1000 + Math.random() * 9000).toString();
+    otpStore.set(identifier, { otp, timestamp: Date.now() });
+  }
+  
   console.log("📱 OTP 👉", otp, "for:", identifier);
 
-  let smsOk = false, emailOk = false;
+  let smsOk = false;
+  let emailOk = false;
 
-  // SMS attempt
+  // 📱 SMS attempt
   if (phone) {
     try {
       const controller = new AbortController();
@@ -78,44 +138,43 @@ router.post("/send-otp", async (req, res) => {
         signal: controller.signal
       });
       clearTimeout(timeout);
-      if (smsRes.ok) smsOk = true;
-      console.log("📲 SMS:", smsOk ? "✅" : "❌");
+      smsOk = smsRes.ok;
+      console.log("📲 SMS:", smsOk ? "✅ Sent" : "❌ Failed");
     } catch (err) {
       console.log("❌ SMS ERROR:", err.message);
     }
   }
 
-  // 🔥 FIXED EMAIL
-  if (!smsOk && email && transporter) {
+  // 📧 EMAIL via Brevo (if SMS failed)
+  if ((!smsOk || resend) && email && transporter) {
     try {
-      console.log("📧 Sending email to:", email);
+      console.log("📧 Sending email via Brevo...");
       
       const info = await transporter.sendMail({
-        from: `"StudyElite" <${process.env.EMAIL}>`,
+        from: `"StudyElite" <${process.env.BREVO_EMAIL}>`,
         to: email,
         subject: "🔐 Your OTP Code - StudyElite",
         html: `
-          <div style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
-            <h2 style="color: #4f46e5;">StudyElite</h2>
-            <h1 style="font-size: 42px; letter-spacing: 5px;">${otp}</h1>
-            <p>This OTP is valid for <strong>5 minutes</strong>.</p>
+          <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 500px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 16px; padding: 40px 20px; text-align: center;">
+              <div style="background: white; border-radius: 12px; padding: 30px;">
+                <h2 style="color: #4f46e5; margin-bottom: 20px;">🔐 StudyElite</h2>
+                <h1 style="font-size: 48px; letter-spacing: 8px; color: #2563eb; margin: 20px 0;">${otp}</h1>
+                <p style="color: #4b5563;">This OTP is valid for <strong>5 minutes</strong>.</p>
+                <hr style="margin: 20px 0;">
+                <p style="color: #6b7280; font-size: 12px;">StudyElite - Secure Learning Platform</p>
+              </div>
+            </div>
           </div>
-        `
+        `,
+        text: `Your OTP is ${otp}. Valid for 5 minutes. - StudyElite`
       });
       
-      console.log("✅ EMAIL SENT:", info.messageId);
+      console.log("✅ EMAIL SENT via Brevo:", info.messageId);
       emailOk = true;
       
     } catch (err) {
       console.log("❌ EMAIL ERROR:", err.message);
-      
-      // Special error handling for Gmail
-      if (err.message.includes("Invalid login") || err.message.includes("Username and Password not accepted")) {
-        console.log("💡 FIX: Generate App Password from Google Account");
-        console.log("   1. Enable 2FA on your Google Account");
-        console.log("   2. Go to Security → App Passwords");
-        console.log("   3. Generate 16-digit code and use as PASS");
-      }
     }
   }
 
@@ -127,16 +186,23 @@ router.post("/send-otp", async (req, res) => {
   });
 });
 
-router.post("/verify-otp", (req, res) => {
+router.post("/verify-otp", async (req, res) => {
   const { email, phone, otp } = req.body;
   const identifier = phone || email;
+  const supabaseAdmin = req.app.locals.supabaseAdmin;
   const stored = otpStore.get(identifier);
+
+  const blockCheck = await isUserBlocked(phone, email, supabaseAdmin);
+  if (blockCheck.blocked) {
+    return res.status(403).json({ success: false, error: "Account blocked", blocked: true });
+  }
 
   if (stored && stored.otp === otp) {
     otpStore.delete(identifier);
     return res.json({ success: true });
   }
-  res.json({ success: false, error: "Invalid OTP" });
+  
+  res.json({ success: false, error: "Invalid or expired OTP" });
 });
 
 export default router;

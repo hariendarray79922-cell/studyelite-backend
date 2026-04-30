@@ -4,6 +4,108 @@ import fetch from 'node-fetch';
 const router = express.Router();
 const otpStore = new Map();
 
+// 🔥 NEW: Rate limit stores
+const emailRateStore = new Map();  // { key: { count, firstAttemptTime } }
+const smsRateStore = new Map();    // { key: { count, firstAttemptTime } }
+const resendCooldownStore = new Map(); // { key: timestamp }
+
+// ============ RATE LIMIT CONFIG ============
+const CONFIG = {
+  EMAIL_LIMIT: 3,      // 3 emails per 24 hours
+  SMS_LIMIT: 2,        // 2 SMS per 24 hours
+  RESEND_COOLDOWN: 120, // 120 seconds
+  OTP_EXPIRY: 5 * 60 * 1000, // 5 minutes
+  WINDOW_MS: 24 * 60 * 60 * 1000 // 24 hours
+};
+
+// ============ CHECK EMAIL RATE LIMIT ============
+function checkEmailRateLimit(identifier) {
+  const now = Date.now();
+  const record = emailRateStore.get(identifier);
+  
+  if (!record) {
+    emailRateStore.set(identifier, { count: 1, firstAttemptTime: now });
+    return { allowed: true, remaining: CONFIG.EMAIL_LIMIT - 1 };
+  }
+  
+  // Reset if window expired
+  if (now - record.firstAttemptTime > CONFIG.WINDOW_MS) {
+    emailRateStore.set(identifier, { count: 1, firstAttemptTime: now });
+    return { allowed: true, remaining: CONFIG.EMAIL_LIMIT - 1 };
+  }
+  
+  if (record.count >= CONFIG.EMAIL_LIMIT) {
+    const resetTime = record.firstAttemptTime + CONFIG.WINDOW_MS;
+    return { allowed: false, remaining: 0, resetTime };
+  }
+  
+  record.count++;
+  emailRateStore.set(identifier, record);
+  return { allowed: true, remaining: CONFIG.EMAIL_LIMIT - record.count };
+}
+
+// ============ CHECK SMS RATE LIMIT ============
+function checkSMSRateLimit(identifier) {
+  const now = Date.now();
+  const record = smsRateStore.get(identifier);
+  
+  if (!record) {
+    smsRateStore.set(identifier, { count: 1, firstAttemptTime: now });
+    return { allowed: true, remaining: CONFIG.SMS_LIMIT - 1 };
+  }
+  
+  if (now - record.firstAttemptTime > CONFIG.WINDOW_MS) {
+    smsRateStore.set(identifier, { count: 1, firstAttemptTime: now });
+    return { allowed: true, remaining: CONFIG.SMS_LIMIT - 1 };
+  }
+  
+  if (record.count >= CONFIG.SMS_LIMIT) {
+    const resetTime = record.firstAttemptTime + CONFIG.WINDOW_MS;
+    return { allowed: false, remaining: 0, resetTime };
+  }
+  
+  record.count++;
+  smsRateStore.set(identifier, record);
+  return { allowed: true, remaining: CONFIG.SMS_LIMIT - record.count };
+}
+
+// ============ CHECK RESEND COOLDOWN ============
+function checkResendCooldown(identifier) {
+  const lastResend = resendCooldownStore.get(identifier);
+  if (lastResend && (Date.now() - lastResend < CONFIG.RESEND_COOLDOWN * 1000)) {
+    const remainingSeconds = Math.ceil((CONFIG.RESEND_COOLDOWN * 1000 - (Date.now() - lastResend)) / 1000);
+    return { allowed: false, remainingSeconds };
+  }
+  return { allowed: true };
+}
+
+function updateResendCooldown(identifier) {
+  resendCooldownStore.set(identifier, Date.now());
+}
+
+// ============ CLEANUP RATE LIMIT STORES ============
+setInterval(() => {
+  const now = Date.now();
+  
+  for (const [key, value] of emailRateStore.entries()) {
+    if (now - value.firstAttemptTime > CONFIG.WINDOW_MS) {
+      emailRateStore.delete(key);
+    }
+  }
+  
+  for (const [key, value] of smsRateStore.entries()) {
+    if (now - value.firstAttemptTime > CONFIG.WINDOW_MS) {
+      smsRateStore.delete(key);
+    }
+  }
+  
+  for (const [key, value] of resendCooldownStore.entries()) {
+    if (now - value > CONFIG.RESEND_COOLDOWN * 1000) {
+      resendCooldownStore.delete(key);
+    }
+  }
+}, 60 * 1000); // Cleanup every minute
+
 // ============ SEND EMAIL VIA GMAIL API ============
 async function sendEmailViaGmailAPI(to, subject, htmlContent) {
   try {
@@ -21,7 +123,6 @@ async function sendEmailViaGmailAPI(to, subject, htmlContent) {
     const { access_token } = await tokenResponse.json();
     
     if (!access_token) {
-      console.log("❌ Failed to get access token");
       return { success: false };
     }
     
@@ -48,14 +149,7 @@ async function sendEmailViaGmailAPI(to, subject, htmlContent) {
       body: JSON.stringify({ raw: encodedMessage })
     });
     
-    if (response.ok) {
-      console.log(`✅ Email sent to ${to}`);
-      return { success: true };
-    } else {
-      const error = await response.text();
-      console.log(`❌ Gmail API error: ${error}`);
-      return { success: false };
-    }
+    return { success: response.ok };
     
   } catch (err) {
     console.log(`❌ Email error: ${err.message}`);
@@ -77,10 +171,10 @@ async function sendSMS(phone, otp) {
     });
     
     clearTimeout(timeout);
-    return response.ok;
+    return { success: response.ok };
   } catch (err) {
     console.log("❌ SMS error:", err.message);
-    return false;
+    return { success: false };
   }
 }
 
@@ -113,15 +207,15 @@ async function isUserBlocked(phone, email, supabaseAdmin) {
   return { blocked: false };
 }
 
-// ============ CLEANUP ============
+// ============ CLEANUP OTP STORE ============
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of otpStore.entries()) {
-    if (now - value.timestamp > 5 * 60 * 1000) {
+    if (now - value.timestamp > CONFIG.OTP_EXPIRY) {
       otpStore.delete(key);
     }
   }
-}, 5 * 60 * 1000);
+}, 60 * 1000);
 
 // ============ SEND OTP ROUTE ============
 router.post("/send-otp", async (req, res) => {
@@ -133,15 +227,29 @@ router.post("/send-otp", async (req, res) => {
     return res.json({ success: false, error: "No contact info" });
   }
 
+  // Check if user is blocked by admin
   const blockCheck = await isUserBlocked(phone, email, supabaseAdmin);
   if (blockCheck.blocked) {
     return res.status(403).json({ success: false, error: "Account blocked", blocked: true });
   }
 
+  // 🔥 RESEND COOLDOWN CHECK (only for resend)
+  if (resend === true) {
+    const cooldownCheck = checkResendCooldown(identifier);
+    if (!cooldownCheck.allowed) {
+      return res.status(429).json({ 
+        success: false, 
+        error: `Please wait ${cooldownCheck.remainingSeconds} seconds before resending`,
+        cooldown: cooldownCheck.remainingSeconds
+      });
+    }
+  }
+
+  // Generate OTP
   let otp;
   const existing = otpStore.get(identifier);
   
-  if (resend && existing && (Date.now() - existing.timestamp < 5 * 60 * 1000)) {
+  if (resend && existing && (Date.now() - existing.timestamp < CONFIG.OTP_EXPIRY)) {
     otp = existing.otp;
   } else {
     otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -150,69 +258,91 @@ router.post("/send-otp", async (req, res) => {
   
   console.log("📱 OTP:", otp, "for:", identifier);
 
-  let smsSent = false;
-  let emailSent = false;
+  let smsResult = { success: false };
+  let emailResult = { success: false };
+  let rateLimitInfo = {};
 
-  // ============ NEW RESEND LOGIC ============
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
+      <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+        <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
+        <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
+        <p>This OTP is valid for <strong>5 minutes</strong>.</p>
+        <hr>
+        <p style="color: #6b7280; font-size: 12px;">StudyElite - Secure Learning Platform</p>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // ============ RESEND MODE: ONLY EMAIL ============
   if (resend === true) {
-    // 🔥 RESEND MODE: Sirf Email bhejo
     if (email && process.env.GMAIL_REFRESH_TOKEN) {
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
-          <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
-            <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
-            <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
-            <p>This OTP is valid for <strong>5 minutes</strong>.</p>
-            <hr>
-            <p style="color: #6b7280; font-size: 12px;">You requested to resend OTP via email.</p>
-          </div>
-        </body>
-        </html>
-      `;
+      // 🔥 Check email rate limit
+      const emailRateCheck = checkEmailRateLimit(identifier);
+      rateLimitInfo.email = { remaining: emailRateCheck.remaining, limit: CONFIG.EMAIL_LIMIT };
       
-      const result = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite (Resend)", htmlContent);
-      emailSent = result.success;
-      console.log("📧 RESEND Email:", emailSent ? "✅" : "❌");
-    } else {
-      console.log("⚠️ Resend: No email or Gmail API not configured");
+      if (!emailRateCheck.allowed) {
+        const resetDate = new Date(emailRateCheck.resetTime);
+        return res.status(429).json({
+          success: false,
+          error: `Email limit reached. You can send ${CONFIG.EMAIL_LIMIT} emails per 24 hours. Reset at ${resetDate.toLocaleString()}`,
+          rateLimit: rateLimitInfo
+        });
+      }
+      
+      emailResult = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite (Resend)", htmlContent);
+      if (emailResult.success) {
+        updateResendCooldown(identifier);
+      }
     }
   } 
+  // ============ NORMAL MODE: SMS FIRST, THEN EMAIL ============
   else {
-    // ============ NORMAL MODE: SMS first, then email fallback ============
+    // Try SMS
     if (phone) {
-      smsSent = await sendSMS(phone, otp);
-      console.log("📲 SMS:", smsSent ? "✅" : "❌");
+      const smsRateCheck = checkSMSRateLimit(identifier);
+      rateLimitInfo.sms = { remaining: smsRateCheck.remaining, limit: CONFIG.SMS_LIMIT };
+      
+      if (smsRateCheck.allowed) {
+        smsResult = await sendSMS(phone, otp);
+        console.log("📲 SMS:", smsResult.success ? "✅" : "❌");
+      } else {
+        const resetDate = new Date(smsRateCheck.resetTime);
+        console.log(`⚠️ SMS limit reached for ${identifier}`);
+        rateLimitInfo.sms.blocked = true;
+        rateLimitInfo.sms.resetTime = resetDate;
+      }
     }
 
-    if (!smsSent && email && process.env.GMAIL_REFRESH_TOKEN) {
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
-          <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
-            <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
-            <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
-            <p>This OTP is valid for <strong>5 minutes</strong>.</p>
-          </div>
-        </body>
-        </html>
-      `;
+    // Email fallback if SMS failed (and email available)
+    if (!smsResult.success && email && process.env.GMAIL_REFRESH_TOKEN) {
+      const emailRateCheck = checkEmailRateLimit(identifier);
+      rateLimitInfo.email = { remaining: emailRateCheck.remaining, limit: CONFIG.EMAIL_LIMIT };
       
-      const result = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite", htmlContent);
-      emailSent = result.success;
-      console.log("📧 Email Fallback:", emailSent ? "✅" : "❌");
+      if (emailRateCheck.allowed) {
+        emailResult = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite", htmlContent);
+        console.log("📧 Email:", emailResult.success ? "✅" : "❌");
+      } else {
+        const resetDate = new Date(emailRateCheck.resetTime);
+        console.log(`⚠️ Email limit reached for ${identifier}`);
+        rateLimitInfo.email.blocked = true;
+        rateLimitInfo.email.resetTime = resetDate;
+      }
     }
   }
 
-  res.json({ 
-    success: smsSent || emailSent, 
-    sms: smsSent, 
-    email: emailSent,
-    mode: resend ? "resend" : "normal"
+  const success = (resend ? emailResult.success : (smsResult.success || emailResult.success));
+
+  res.json({
+    success,
+    sms: smsResult.success,
+    email: emailResult.success,
+    mode: resend ? "resend" : "normal",
+    rateLimit: rateLimitInfo
   });
 });
 
@@ -224,10 +354,33 @@ router.post("/verify-otp", (req, res) => {
 
   if (stored && stored.otp === otp) {
     otpStore.delete(identifier);
-    return res.json({ success: true });
+    return res.json({ success: true, message: "OTP verified successfully" });
   }
   
   res.json({ success: false, error: "Invalid or expired OTP" });
+});
+
+// ============ GET RATE LIMIT STATUS (Optional) ============
+router.get("/rate-limit/:identifier", (req, res) => {
+  const { identifier } = req.params;
+  
+  const emailRecord = emailRateStore.get(identifier);
+  const smsRecord = smsRateStore.get(identifier);
+  
+  res.json({
+    email: {
+      used: emailRecord?.count || 0,
+      limit: CONFIG.EMAIL_LIMIT,
+      remaining: CONFIG.EMAIL_LIMIT - (emailRecord?.count || 0),
+      resetTime: emailRecord ? new Date(emailRecord.firstAttemptTime + CONFIG.WINDOW_MS) : null
+    },
+    sms: {
+      used: smsRecord?.count || 0,
+      limit: CONFIG.SMS_LIMIT,
+      remaining: CONFIG.SMS_LIMIT - (smsRecord?.count || 0),
+      resetTime: smsRecord ? new Date(smsRecord.firstAttemptTime + CONFIG.WINDOW_MS) : null
+    }
+  });
 });
 
 export default router;

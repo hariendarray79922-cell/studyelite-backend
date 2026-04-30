@@ -29,25 +29,40 @@ export async function checkPendingSubscriptions() {
           const rpSub = await razorpay.subscriptions.fetch(sub.razorpay_subscription_id);
           console.log("🔎 Subscription:", sub.razorpay_subscription_id, rpSub.status);
 
-          // pending → trial (autopay approved)
           if (sub.status === "pending" && rpSub.status === "authenticated") {
+            const now = new Date();
+            const appId = sub.app_id;
+            
+            const { data: app } = await supabaseAdmin
+              .from("apps")
+              .select("trial_days")
+              .eq("id", appId)
+              .single();
+            
+            const trialDays = app?.trial_days || 7;
+            const endDate = new Date(now);
+            endDate.setDate(endDate.getDate() + trialDays);
+            
+            // 🔥 FIX: FULL TIMESTAMP
             await supabaseAdmin
               .from("subscriptions")
               .update({
                 status: "trial",
-                start_date: new Date().toISOString().split('T')[0],
-                end_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-                updated_at: new Date()
+                start_date: now.toISOString(),
+                end_date: endDate.toISOString(),
+                updated_at: now.toISOString()
               })
               .eq("id", sub.id);
-            console.log("✅ Trial started:", sub.id);
+            console.log(`✅ Trial started via checker: ${sub.id}`);
           }
 
-          // trial + cancelled + no payment → trial_cancelled
           if (sub.status === "trial" && rpSub.status === "cancelled" && !sub.razorpay_payment_id) {
             await supabaseAdmin
               .from("subscriptions")
-              .update({ status: "trial_cancelled", updated_at: new Date() })
+              .update({ 
+                status: "trial_cancelled", 
+                updated_at: new Date().toISOString()
+              })
               .eq("id", sub.id);
             console.log("🚫 Trial revoked (autopay cancelled):", sub.id);
           }

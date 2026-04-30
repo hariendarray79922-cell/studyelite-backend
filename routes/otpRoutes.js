@@ -153,32 +153,67 @@ router.post("/send-otp", async (req, res) => {
   let smsSent = false;
   let emailSent = false;
 
-  if (phone) {
-    smsSent = await sendSMS(phone, otp);
-    console.log("📲 SMS:", smsSent ? "✅" : "❌");
+  // ============ NEW RESEND LOGIC ============
+  if (resend === true) {
+    // 🔥 RESEND MODE: Sirf Email bhejo
+    if (email && process.env.GMAIL_REFRESH_TOKEN) {
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
+          <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+            <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
+            <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
+            <p>This OTP is valid for <strong>5 minutes</strong>.</p>
+            <hr>
+            <p style="color: #6b7280; font-size: 12px;">You requested to resend OTP via email.</p>
+          </div>
+        </body>
+        </html>
+      `;
+      
+      const result = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite (Resend)", htmlContent);
+      emailSent = result.success;
+      console.log("📧 RESEND Email:", emailSent ? "✅" : "❌");
+    } else {
+      console.log("⚠️ Resend: No email or Gmail API not configured");
+    }
+  } 
+  else {
+    // ============ NORMAL MODE: SMS first, then email fallback ============
+    if (phone) {
+      smsSent = await sendSMS(phone, otp);
+      console.log("📲 SMS:", smsSent ? "✅" : "❌");
+    }
+
+    if (!smsSent && email && process.env.GMAIL_REFRESH_TOKEN) {
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
+          <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+            <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
+            <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
+            <p>This OTP is valid for <strong>5 minutes</strong>.</p>
+          </div>
+        </body>
+        </html>
+      `;
+      
+      const result = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite", htmlContent);
+      emailSent = result.success;
+      console.log("📧 Email Fallback:", emailSent ? "✅" : "❌");
+    }
   }
 
-  if ((!smsSent || resend) && email && process.env.GMAIL_REFRESH_TOKEN) {
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head><meta charset="UTF-8"></head>
-      <body style="font-family: Arial, sans-serif; text-align: center; padding: 30px;">
-        <div style="max-width: 500px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
-          <h2 style="color: #4f46e5;">🔐 StudyElite</h2>
-          <h1 style="font-size: 52px; letter-spacing: 8px; color: #2563eb;">${otp}</h1>
-          <p>This OTP is valid for <strong>5 minutes</strong>.</p>
-        </div>
-      </body>
-      </html>
-    `;
-    
-    const result = await sendEmailViaGmailAPI(email, "🔐 Your OTP Code - StudyElite", htmlContent);
-    emailSent = result.success;
-    console.log("📧 Email:", emailSent ? "✅" : "❌");
-  }
-
-  res.json({ success: smsSent || emailSent, sms: smsSent, email: emailSent });
+  res.json({ 
+    success: smsSent || emailSent, 
+    sms: smsSent, 
+    email: emailSent,
+    mode: resend ? "resend" : "normal"
+  });
 });
 
 // ============ VERIFY OTP ROUTE ============

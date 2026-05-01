@@ -29,7 +29,7 @@ export default async function webhook(req, res) {
     const event = payload.event;
     console.log("📩 Webhook:", event);
 
-    // 🔥 SUBSCRIPTION AUTHENTICATED → pending → trial
+    // 🔥 SUBSCRIPTION AUTHENTICATED (Mandate approved, NOT payment)
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
       
@@ -39,118 +39,94 @@ export default async function webhook(req, res) {
         .eq("razorpay_subscription_id", sub.id)
         .single();
       
-      let trialDays = 7;
-      if (subscriptionRecord) {
-        const { data: app } = await supabaseAdmin
-          .from("apps")
-          .select("trial_days")
-          .eq("id", subscriptionRecord.app_id)
-          .single();
-        if (app) trialDays = app.trial_days || 7;
-      }
-      
-      // 🔥 REAL TIME - Use Razorpay's start_at timestamp
-      const razorpayStartAt = sub.start_at; // UNIX timestamp from Razorpay
-      const startDate = new Date(razorpayStartAt * 1000);
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + trialDays);
-      
-      const now = new Date();
-      
-      console.log(`📅 Razorpay Start At: ${razorpayStartAt}`);
-      console.log(`📅 Start Date (UTC): ${startDate.toISOString()}`);
-      console.log(`📅 Start Date (IST): ${startDate.toLocaleString("en-IN", {timeZone: "Asia/Kolkata"})}`);
-      console.log(`📅 End Date (UTC): ${endDate.toISOString()}`);
-      console.log(`📅 End Date (IST): ${endDate.toLocaleString("en-IN", {timeZone: "Asia/Kolkata"})}`);
-      
+      // Just update status to indicate mandate approved
       await supabaseAdmin
         .from("subscriptions")
         .update({
-          status: "trial",
-          start_date: startDate.toISOString(),
-          end_date: endDate.toISOString(),
-          razorpay_payment_id: null,
-          updated_at: now.toISOString()
+          status: "mandate_approved",
+          updated_at: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", sub.id)
         .eq("status", "pending");
       
-      console.log(`✅ Trial started: ${sub.id} (${trialDays} days)`);
+      console.log(`✅ Mandate approved: ${sub.id}`);
     }
 
-    // 🔥 PAYMENT CAPTURED
-    if (event === "payment.captured") {
-      const payment = payload.payload.payment.entity;
+    // 🔥 INVOICE PAID - Real payment success
+    if (event === "invoice.paid") {
+      const invoice = payload.payload.invoice.entity;
+      const subscriptionId = invoice.subscription_id;
       
       const { data: subscriptionRecord } = await supabaseAdmin
         .from("subscriptions")
-        .select("app_id, razorpay_payment_id, status")
-        .eq("razorpay_subscription_id", payment.subscription_id)
+        .select("app_id")
+        .eq("razorpay_subscription_id", subscriptionId)
         .single();
-      
-      if (!subscriptionRecord) {
-        console.log(`⚠️ No subscription record for: ${payment.subscription_id}`);
-        return res.json({ success: true });
-      }
-      
-      if (subscriptionRecord.razorpay_payment_id) {
-        console.log(`ℹ️ Payment already recorded: ${payment.id}`);
-        return res.json({ success: true });
-      }
       
       const { data: app } = await supabaseAdmin
         .from("apps")
-        .select("price, trial_days")
+        .select("trial_days, price")
         .eq("id", subscriptionRecord.app_id)
         .single();
       
-      const amountInRupees = payment.amount / 100;
+      const amountInRupees = invoice.amount / 100;
       const now = new Date();
-      let startDate = new Date();
       let endDate = new Date();
       let newStatus = "";
       
       if (amountInRupees === 2) {
         const trialDays = app?.trial_days || 7;
-        startDate = new Date(); // Current time
-        endDate = new Date();
         endDate.setDate(endDate.getDate() + trialDays);
         newStatus = "trial";
-        console.log(`✅ Trial verification payment: ${payment.id} (${trialDays} days trial)`);
-      } 
-      else if (amountInRupees >= 100) {
-        startDate = new Date(); // Current time
-        endDate = new Date();
+      } else if (amountInRupees >= 100) {
         endDate.setFullYear(endDate.getFullYear() + 1);
         newStatus = "active";
-        console.log(`✅ Full payment captured: ${payment.id} (1 year valid)`);
-      } else {
-        console.log(`⚠️ Unknown payment amount: ${amountInRupees}`);
-        await supabaseAdmin
-          .from("subscriptions")
-          .update({
-            razorpay_payment_id: payment.id,
-            updated_at: now.toISOString()
-          })
-          .eq("razorpay_subscription_id", payment.subscription_id);
-        return res.json({ success: true });
       }
-      
-      console.log(`📅 Start (UTC): ${startDate.toISOString()}`);
-      console.log(`📅 Start (IST): ${startDate.toLocaleString("en-IN", {timeZone: "Asia/Kolkata"})}`);
-      console.log(`📅 End (UTC): ${endDate.toISOString()}`);
-      console.log(`📅 End (IST): ${endDate.toLocaleString("en-IN", {timeZone: "Asia/Kolkata"})}`);
       
       await supabaseAdmin
         .from("subscriptions")
         .update({
           status: newStatus,
-          razorpay_payment_id: payment.id,
-          start_date: startDate.toISOString(),
+          razorpay_payment_id: invoice.id,
+          start_date: now.toISOString(),
           end_date: endDate.toISOString(),
           updated_at: now.toISOString()
         })
-        .eq("razorpay_subscription_id", payment.subscription_id);
+        .eq("razorpay_subscription_id", subscriptionId);
+      
+      console.log(`✅ Invoice paid: ${invoice.id} → ${newStatus}`);
+    }
+
+    // 🔥 INVOICE PAYMENT FAILED
+    if (event === "invoice.payment_failed") {
+      const invoice = payload.payload.invoice.entity;
+      const subscriptionId = invoice.subscription_id;
+      
+      await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          status: "payment_failed",
+          updated_at: new Date().toISOString()
+        })
+        .eq("razorpay_subscription_id", subscriptionId);
+      
+      console.log(`❌ Payment failed for subscription: ${subscriptionId}`);
+    }
+
+    // 🔥 SUBSCRIPTION HALTED (Repeated failures)
+    if (event === "subscription.halted") {
+      const sub = payload.payload.subscription.entity;
+      
+      await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          status: "halted",
+          halted_reason: "payment_failed_repeated",
+          updated_at: new Date().toISOString()
+        })
+        .eq("razorpay_subscription_id", sub.id);
+      
+      console.log(`⏸️ Subscription halted: ${sub.id}`);
     }
 
     // 🔥 SUBSCRIPTION CANCELLED
@@ -182,20 +158,6 @@ export default async function webhook(req, res) {
           .eq("razorpay_subscription_id", sub.id);
         console.log(`ℹ️ Paid user cancelled autopay, access till end_date`);
       }
-    }
-
-    // 🔥 SUBSCRIPTION ACTIVATED
-    if (event === "subscription.activated") {
-      const sub = payload.payload.subscription.entity;
-      
-      await supabaseAdmin
-        .from("subscriptions")
-        .update({
-          updated_at: new Date().toISOString()
-        })
-        .eq("razorpay_subscription_id", sub.id);
-      
-      console.log(`✅ Subscription activated: ${sub.id}`);
     }
 
     res.json({ success: true });

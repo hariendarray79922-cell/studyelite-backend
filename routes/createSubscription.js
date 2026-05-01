@@ -41,34 +41,22 @@ router.post("/", async (req, res) => {
 
     const TRIAL_AMOUNT = 2;
     const trialDays = app.trial_days || 7;
+    const FULL_PRICE = app.price || 1499;
 
-    // 🔥 Start at TOMORROW (24 hours from now) - avoids "same day" display issue
-    const startAt = Math.floor(Date.now() / 1000) + (24 * 60 * 60);
-
+    // 🔥 FIX 1: total_count = 999 (unlimited)
+    // 🔥 FIX 2: NO start_at (let Razorpay handle)
+    // 🔥 FIX 3: NO addons (clean trial)
     const subscription = await razorpay.subscriptions.create({
       plan_id: app.razorpay_plan_id,
       customer_notify: 1,
-      total_count: 1,
-      start_at: startAt,
-      addons: [
-        {
-          item: {
-            name: `${app.app_name} - ${trialDays} Days Trial`,
-            amount: TRIAL_AMOUNT * 100,
-            currency: "INR"
-          }
-        }
-      ]
+      total_count: 999,      // ✅ Unlimited until cancelled
+      // NO start_at - Razorpay handles immediately
+      // NO addons - clean subscription
     });
 
     console.log("✅ Razorpay subscription created:", subscription.id);
-    
-    // 🔥 REAL TIME - Current timestamp with milliseconds
+
     const currentTimestamp = new Date().toISOString();
-    const subscriptionStartTimestamp = new Date(startAt * 1000).toISOString();
-    
-    console.log(`📅 Current Time (UTC): ${currentTimestamp}`);
-    console.log(`📅 Subscription Start (UTC): ${subscriptionStartTimestamp}`);
 
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
@@ -86,7 +74,6 @@ router.post("/", async (req, res) => {
           status: "pending",
           amount: TRIAL_AMOUNT,
           razorpay_subscription_id: subscription.id,
-          razorpay_subscription_start_at: subscriptionStartTimestamp,
           updated_at: currentTimestamp
         })
         .eq("id", existingRow.id);
@@ -100,7 +87,6 @@ router.post("/", async (req, res) => {
           status: "pending",
           amount: TRIAL_AMOUNT,
           razorpay_subscription_id: subscription.id,
-          razorpay_subscription_start_at: subscriptionStartTimestamp,
           created_at: currentTimestamp,
           updated_at: currentTimestamp
         });
@@ -119,7 +105,7 @@ router.post("/", async (req, res) => {
       subscription_id: subscription.id,
       amount: TRIAL_AMOUNT,
       trial_days: trialDays,
-      start_at: startAt
+      full_price: FULL_PRICE
     });
 
   } catch (err) {

@@ -1,6 +1,5 @@
 import express from "express";
 import Razorpay from "razorpay";
-import crypto from "crypto";
 
 const router = express.Router();
 
@@ -26,7 +25,6 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "App not found" });
     }
 
-    // Check existing active subscription
     const { data: activeSub } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -39,7 +37,6 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
-    // Create Razorpay order
     const order = await razorpay.orders.create({
       amount: app.price * 100,
       currency: "INR",
@@ -48,7 +45,6 @@ router.post("/", async (req, res) => {
 
     console.log("✅ Razorpay order created:", order.id);
 
-    // 🔥 FIX: Remove updated_at column
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -65,7 +61,6 @@ router.post("/", async (req, res) => {
           status: "pending_direct",
           amount: app.price,
           razorpay_order_id: order.id
-          // ❌ REMOVED: updated_at: new Date()
         })
         .eq("id", existingRow.id);
     } else {
@@ -78,7 +73,6 @@ router.post("/", async (req, res) => {
           status: "pending_direct",
           amount: app.price,
           razorpay_order_id: order.id
-          // ❌ REMOVED: created_at, updated_at
         });
     }
 
@@ -86,8 +80,6 @@ router.post("/", async (req, res) => {
       console.error("❌ Database error:", dbResult.error);
       return res.status(500).json({ error: "Database insert failed", details: dbResult.error });
     }
-
-    console.log("✅ Database row created/updated");
 
     res.json({
       success: true,
@@ -102,7 +94,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// ✅ VERIFY DIRECT PAYMENT (Keep as is, but remove updated_at)
+// ✅ VERIFY - FIXED: No .split('T')[0]
 router.post("/verify", async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
@@ -139,14 +131,14 @@ router.post("/verify", async (req, res) => {
       return res.status(404).json({ error: "No subscription record found" });
     }
 
+    // 🔥 FIX: Full ISO timestamp, no split
     await supabaseAdmin
       .from("subscriptions")
       .update({
         status: "active",
         razorpay_payment_id: razorpay_payment_id,
-        start_date: start.toISOString().split('T')[0],
-        end_date: end.toISOString().split('T')[0]
-        // ❌ REMOVED: updated_at
+        start_date: start.toISOString(),
+        end_date: end.toISOString()
       })
       .eq("id", existingRow.id);
 
@@ -159,7 +151,7 @@ router.post("/verify", async (req, res) => {
   }
 });
 
-// ✅ VERIFY TRIAL (Keep as is, but remove updated_at)
+// ✅ VERIFY TRIAL - FIXED
 router.post("/verify-subscription", async (req, res) => {
   try {
     const { razorpay_subscription_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
@@ -197,14 +189,14 @@ router.post("/verify-subscription", async (req, res) => {
       return res.status(404).json({ error: "No subscription record found" });
     }
 
+    // 🔥 FIX: Full ISO timestamp, no split
     await supabaseAdmin
       .from("subscriptions")
       .update({
         status: "trial",
         razorpay_payment_id: razorpay_payment_id,
-        start_date: start.toISOString().split('T')[0],
-        end_date: end.toISOString().split('T')[0]
-        // ❌ REMOVED: updated_at
+        start_date: start.toISOString(),
+        end_date: end.toISOString()
       })
       .eq("id", existingRow.id);
 

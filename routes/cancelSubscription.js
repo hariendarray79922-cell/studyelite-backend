@@ -16,10 +16,14 @@ router.post("/", async (req, res) => {
 
     console.log("📥 Cancel request:", { razorpay_subscription_id, user_id, app_id });
 
+    if (!razorpay_subscription_id) {
+      return res.status(400).json({ error: "subscription_id required" });
+    }
+
     // Cancel in Razorpay
     await razorpay.subscriptions.cancel(razorpay_subscription_id);
 
-    // 🔥 Update status to "trial_cancelled"
+    // Update status to "trial_cancelled"
     const { error: updateError } = await supabaseAdmin
       .from("subscriptions")
       .update({

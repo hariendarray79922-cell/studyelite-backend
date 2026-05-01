@@ -8,7 +8,6 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// 🔥 TRIAL - Create ONE-TIME ORDER (₹2 only)
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
@@ -16,7 +15,11 @@ router.post("/", async (req, res) => {
 
     console.log("📥 Trial request:", { app_id, user_id });
 
-    // Get app details
+    if (!supabaseAdmin) {
+      console.error("❌ Supabase admin not initialized");
+      return res.status(500).json({ error: "Database connection error" });
+    }
+
     const { data: app, error: appError } = await supabaseAdmin
       .from("apps")
       .select("*")
@@ -24,10 +27,12 @@ router.post("/", async (req, res) => {
       .single();
 
     if (appError || !app) {
+      console.error("❌ App not found:", app_id);
       return res.status(404).json({ error: "App not found" });
     }
 
-    // Check existing active subscription
+    console.log("✅ App found:", app.app_name);
+
     const { data: activeSub } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -40,14 +45,20 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
-    const TRIAL_AMOUNT = 2;  // ₹2 only
+    const TRIAL_AMOUNT = 2;
     const trialDays = app.trial_days || 7;
 
-    // ✅ FIX: Create ONE-TIME ORDER (NOT subscription)
+    // 🔥 FIX: receipt ko chhoto karo (max 40 chars)
+    const shortUserId = user_id.split('-')[0]; // "f105e1a1"
+    const timestamp = Date.now().toString().slice(-8); // last 8 digits
+    const receipt = `trial_${shortUserId}_${timestamp}`; // ~25 chars
+
+    console.log("📝 Receipt:", receipt);
+
     const order = await razorpay.orders.create({
-      amount: TRIAL_AMOUNT * 100,  // 200 paise = ₹2
+      amount: TRIAL_AMOUNT * 100,
       currency: "INR",
-      receipt: `trial_${user_id}_${Date.now()}`,
+      receipt: receipt,  // ✅ Ab 40 chars se kam hai
       notes: {
         type: "trial",
         app_id: app_id,
@@ -57,11 +68,9 @@ router.post("/", async (req, res) => {
     });
 
     console.log("✅ Trial order created:", order.id);
-    console.log(`💰 Amount: ₹${TRIAL_AMOUNT} (Verification only)`);
 
     const currentTimestamp = new Date().toISOString();
 
-    // Database operation
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -107,15 +116,12 @@ router.post("/", async (req, res) => {
   }
 });
 
-// ✅ FIX: VERIFY TRIAL PAYMENT (yeh route missing tha)
-router.post("/verify-subscription", async (req, res) => {
+// Verify trial payment
+router.post("/verify", async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
 
-    console.log("🔐 Verifying trial payment:", { razorpay_order_id, razorpay_payment_id });
-
-    // Verify signature
     const crypto = await import("crypto");
     const sign = crypto.default
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -126,7 +132,6 @@ router.post("/verify-subscription", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    // Get app details
     const { data: app } = await supabaseAdmin
       .from("apps")
       .select("trial_days")
@@ -138,7 +143,6 @@ router.post("/verify-subscription", async (req, res) => {
     const end = new Date();
     end.setDate(end.getDate() + trialDays);
 
-    // Update subscription
     await supabaseAdmin
       .from("subscriptions")
       .update({
@@ -152,13 +156,10 @@ router.post("/verify-subscription", async (req, res) => {
       .eq("app_id", app_id);
 
     console.log(`✅ TRIAL ACTIVATED: ${razorpay_payment_id}`);
-    console.log(`📅 Start: ${start.toISOString()}`);
-    console.log(`📅 End: ${end.toISOString()}`);
-    
     res.json({ success: true });
 
   } catch (err) {
-    console.error("Verify trial error:", err);
+    console.error("Verify error:", err);
     res.status(500).json({ error: err.message });
   }
 });

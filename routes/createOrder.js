@@ -17,6 +17,12 @@ router.post("/", async (req, res) => {
 
     console.log("📥 Premium order request:", { app_id, user_id });
 
+    // Validation
+    if (!app_id || !user_id) {
+      return res.status(400).json({ error: "app_id and user_id are required" });
+    }
+
+    // Get app details
     const { data: app, error: appError } = await supabaseAdmin
       .from("apps")
       .select("*")
@@ -24,12 +30,13 @@ router.post("/", async (req, res) => {
       .single();
 
     if (appError || !app) {
+      console.error("App not found:", appError);
       return res.status(404).json({ error: "App not found" });
     }
 
     const fullPrice = app.price || 499;
 
-    // 🔥 Check existing subscription
+    // Check existing subscription
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -41,11 +48,19 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
+    // 🔥 FIX: receipt length must be <= 40 characters
+    // Use timestamp + short hash instead of full UUID
+    const shortUserId = user_id.split('-')[0]; // Take first part only
+    const timestamp = Date.now().toString().slice(-8); // Last 8 digits
+    const receipt = `prem_${shortUserId}_${timestamp}`.slice(0, 40);
+    
+    console.log("📝 Receipt:", receipt);
+
     // Create one-time order
     const order = await razorpay.orders.create({
       amount: fullPrice * 100,
       currency: "INR",
-      receipt: `premium_${user_id}_${Date.now()}`,
+      receipt: receipt,
       notes: {
         type: "premium",
         app_id: app_id,
@@ -56,7 +71,7 @@ router.post("/", async (req, res) => {
 
     console.log("✅ Premium order created:", order.id);
 
-    // 🔥 UPSERT - Set status to pending_direct
+    // UPSERT - Set status to pending_direct
     if (existingRow) {
       const { error: updateError } = await supabaseAdmin
         .from("subscriptions")
@@ -114,6 +129,13 @@ router.post("/verify", async (req, res) => {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
 
+    console.log("📥 Verify request:", { razorpay_order_id, razorpay_payment_id, user_id, app_id });
+
+    // Validation
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !user_id || !app_id) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
     const sign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + "|" + razorpay_payment_id)
@@ -125,21 +147,21 @@ router.post("/verify", async (req, res) => {
 
     const start = new Date();
     const end = new Date();
-    end.setFullYear(end.getFullYear() + 100); // Lifetime
+    end.setFullYear(end.getFullYear() + 100); // Lifetime access
 
-    // 🔥 Update status to "active"
+    // Update status to "active"
     const { error: updateError } = await supabaseAdmin
       .from("subscriptions")
       .update({
         status: "active",
         razorpay_payment_id: razorpay_payment_id,
+        razorpay_order_id: razorpay_order_id,
         start_date: start.toISOString(),
         end_date: end.toISOString(),
         updated_at: new Date().toISOString()
       })
       .eq("user_id", user_id)
-      .eq("app_id", app_id)
-      .eq("razorpay_order_id", razorpay_order_id);
+      .eq("app_id", app_id);
 
     if (updateError) {
       console.error("DB update error:", updateError);

@@ -1,19 +1,19 @@
 import express from "express";
-import Razorpay from "razorpay";
 import crypto from "crypto";
 
 const router = express.Router();
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-});
-
-// 🔥 PREMIUM ORDER - One-time payment, no auto-debit
+// 🔥 PREMIUM ORDER - Create pending_direct first
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
+    const Razorpay = await import("razorpay");
+    
+    const razorpay = new Razorpay.default({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET
+    });
 
     console.log("📥 Premium order request:", { app_id, user_id });
 
@@ -28,6 +28,18 @@ router.post("/", async (req, res) => {
     }
 
     const fullPrice = app.price || 499;
+
+    // 🔥 Check existing subscription
+    const { data: existingRow } = await supabaseAdmin
+      .from("subscriptions")
+      .select("*")
+      .eq("user_id", user_id)
+      .eq("app_id", app_id)
+      .maybeSingle();
+
+    if (existingRow && existingRow.status === "active") {
+      return res.status(400).json({ error: "Subscription already active" });
+    }
 
     // Create one-time order
     const order = await razorpay.orders.create({
@@ -44,22 +56,41 @@ router.post("/", async (req, res) => {
 
     console.log("✅ Premium order created:", order.id);
 
-    // Save to database
-    const { error: insertError } = await supabaseAdmin
-      .from("subscriptions")
-      .insert({
-        user_id: user_id,
-        app_id: app_id,
-        status: "pending",
-        amount: fullPrice,
-        razorpay_order_id: order.id,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
+    // 🔥 UPSERT - Set status to pending_direct
+    if (existingRow) {
+      const { error: updateError } = await supabaseAdmin
+        .from("subscriptions")
+        .update({
+          status: "pending_direct",
+          amount: fullPrice,
+          razorpay_order_id: order.id,
+          updated_at: new Date().toISOString(),
+          razorpay_payment_id: null,
+          razorpay_subscription_id: null
+        })
+        .eq("id", existingRow.id);
 
-    if (insertError) {
-      console.error("DB insert error:", insertError);
-      return res.status(500).json({ error: "Failed to save order" });
+      if (updateError) {
+        console.error("DB update error:", updateError);
+        return res.status(500).json({ error: "Failed to update order" });
+      }
+    } else {
+      const { error: insertError } = await supabaseAdmin
+        .from("subscriptions")
+        .insert({
+          user_id: user_id,
+          app_id: app_id,
+          status: "pending_direct",
+          amount: fullPrice,
+          razorpay_order_id: order.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (insertError) {
+        console.error("DB insert error:", insertError);
+        return res.status(500).json({ error: "Failed to save order" });
+      }
     }
 
     res.json({
@@ -68,7 +99,7 @@ router.post("/", async (req, res) => {
       order_id: order.id,
       amount: fullPrice,
       is_recurring: false,
-      message: "One-time payment of ₹" + fullPrice + " for 1 year access. No auto-debit."
+      status: "pending_direct"
     });
 
   } catch (err) {
@@ -77,7 +108,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// Verify premium payment
+// 🔥 VERIFY PREMIUM PAYMENT - Update status to "active"
 router.post("/verify", async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
@@ -94,9 +125,9 @@ router.post("/verify", async (req, res) => {
 
     const start = new Date();
     const end = new Date();
-    end.setFullYear(end.getFullYear() + 1);
+    end.setFullYear(end.getFullYear() + 100); // Lifetime
 
-    // Update subscription to active
+    // 🔥 Update status to "active"
     const { error: updateError } = await supabaseAdmin
       .from("subscriptions")
       .update({
@@ -107,15 +138,16 @@ router.post("/verify", async (req, res) => {
         updated_at: new Date().toISOString()
       })
       .eq("user_id", user_id)
-      .eq("app_id", app_id);
+      .eq("app_id", app_id)
+      .eq("razorpay_order_id", razorpay_order_id);
 
     if (updateError) {
       console.error("DB update error:", updateError);
-      return res.status(500).json({ error: "Failed to update subscription" });
+      return res.status(500).json({ error: "Failed to verify payment" });
     }
 
     console.log(`✅ PREMIUM ACTIVATED: ${razorpay_payment_id}`);
-    res.json({ success: true, message: "Premium access activated for 1 year!" });
+    res.json({ success: true, status: "active" });
 
   } catch (err) {
     console.error("Verify error:", err);

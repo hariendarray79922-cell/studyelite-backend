@@ -8,18 +8,15 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+// 🔥 TRIAL SUBSCRIPTION - ₹2 initial, then auto-debit after trial
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
 
-    console.log("📥 Trial request:", { app_id, user_id });
+    console.log("📥 Trial subscription request:", { app_id, user_id });
 
-    if (!supabaseAdmin) {
-      console.error("❌ Supabase admin not initialized");
-      return res.status(500).json({ error: "Database connection error" });
-    }
-
+    // Get app details
     const { data: app, error: appError } = await supabaseAdmin
       .from("apps")
       .select("*")
@@ -27,13 +24,11 @@ router.post("/", async (req, res) => {
       .single();
 
     if (appError || !app) {
-      console.error("❌ App not found:", app_id);
       return res.status(404).json({ error: "App not found" });
     }
 
-    console.log("✅ App found:", app.app_name);
-
-    const { data: activeSub } = await supabaseAdmin
+    // Check existing subscription
+    const { data: existingSub } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
       .eq("user_id", user_id)
@@ -41,125 +36,75 @@ router.post("/", async (req, res) => {
       .in("status", ["active", "trial"])
       .maybeSingle();
 
-    if (activeSub) {
+    if (existingSub) {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
     const TRIAL_AMOUNT = 2;
     const trialDays = app.trial_days || 7;
+    const fullAmount = app.price || 499;
 
-    // 🔥 FIX: receipt ko chhoto karo (max 40 chars)
-    const shortUserId = user_id.split('-')[0]; // "f105e1a1"
-    const timestamp = Date.now().toString().slice(-8); // last 8 digits
-    const receipt = `trial_${shortUserId}_${timestamp}`; // ~25 chars
-
-    console.log("📝 Receipt:", receipt);
-
-    const order = await razorpay.orders.create({
-      amount: TRIAL_AMOUNT * 100,
-      currency: "INR",
-      receipt: receipt,  // ✅ Ab 40 chars se kam hai
+    // Create subscription with trial add-on
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: app.razorpay_plan_id,
+      customer_notify: 1,
+      total_count: 12, // 12 months
+      start_at: Math.floor(Date.now() / 1000) + (trialDays * 86400),
+      addons: [
+        {
+          item: {
+            name: `${app.app_name} - ${trialDays} Day Trial`,
+            amount: TRIAL_AMOUNT * 100,
+            currency: "INR"
+          }
+        }
+      ],
       notes: {
         type: "trial",
         app_id: app_id,
         user_id: user_id,
-        trial_days: trialDays
+        trial_days: trialDays,
+        full_amount: fullAmount
       }
     });
 
-    console.log("✅ Trial order created:", order.id);
+    console.log("✅ Trial subscription created:", subscription.id);
 
-    const currentTimestamp = new Date().toISOString();
+    const trialEndDate = new Date();
+    trialEndDate.setDate(trialEndDate.getDate() + trialDays);
 
-    const { data: existingRow } = await supabaseAdmin
+    // Save to database
+    const { error: insertError } = await supabaseAdmin
       .from("subscriptions")
-      .select("*")
-      .eq("user_id", user_id)
-      .eq("app_id", app_id)
-      .maybeSingle();
+      .insert({
+        user_id: user_id,
+        app_id: app_id,
+        status: "trial",
+        amount: TRIAL_AMOUNT,
+        razorpay_subscription_id: subscription.id,
+        end_date: trialEndDate.toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
 
-    if (existingRow) {
-      await supabaseAdmin
-        .from("subscriptions")
-        .update({
-          status: "trial_pending",
-          amount: TRIAL_AMOUNT,
-          razorpay_order_id: order.id,
-          updated_at: currentTimestamp
-        })
-        .eq("id", existingRow.id);
-    } else {
-      await supabaseAdmin
-        .from("subscriptions")
-        .insert({
-          user_id: user_id,
-          app_id: app_id,
-          status: "trial_pending",
-          amount: TRIAL_AMOUNT,
-          razorpay_order_id: order.id,
-          created_at: currentTimestamp,
-          updated_at: currentTimestamp
-        });
+    if (insertError) {
+      console.error("DB insert error:", insertError);
+      return res.status(500).json({ error: "Failed to save subscription" });
     }
 
     res.json({
       success: true,
       key: process.env.RAZORPAY_KEY_ID,
-      order_id: order.id,
+      subscription_id: subscription.id,
       amount: TRIAL_AMOUNT,
-      trial_days: trialDays
+      trial_days: trialDays,
+      full_amount: fullAmount,
+      is_recurring: true,
+      message: `Trial activated for ${trialDays} days. After trial, ₹${fullAmount}/month will be auto-debited.`
     });
 
   } catch (err) {
-    console.error("🔥 Trial order error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Verify trial payment
-router.post("/verify", async (req, res) => {
-  try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
-    const supabaseAdmin = req.app.locals.supabaseAdmin;
-
-    const crypto = await import("crypto");
-    const sign = crypto.default
-      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-      .update(razorpay_order_id + "|" + razorpay_payment_id)
-      .digest("hex");
-
-    if (sign !== razorpay_signature) {
-      return res.status(400).json({ error: "Invalid signature" });
-    }
-
-    const { data: app } = await supabaseAdmin
-      .from("apps")
-      .select("trial_days")
-      .eq("id", app_id)
-      .single();
-
-    const trialDays = app?.trial_days || 7;
-    const start = new Date();
-    const end = new Date();
-    end.setDate(end.getDate() + trialDays);
-
-    await supabaseAdmin
-      .from("subscriptions")
-      .update({
-        status: "trial",
-        razorpay_payment_id: razorpay_payment_id,
-        start_date: start.toISOString(),
-        end_date: end.toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq("user_id", user_id)
-      .eq("app_id", app_id);
-
-    console.log(`✅ TRIAL ACTIVATED: ${razorpay_payment_id}`);
-    res.json({ success: true });
-
-  } catch (err) {
-    console.error("Verify error:", err);
+    console.error("🔥 Trial subscription error:", err);
     res.status(500).json({ error: err.message });
   }
 });

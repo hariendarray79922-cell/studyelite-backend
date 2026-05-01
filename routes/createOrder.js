@@ -1,5 +1,6 @@
 import express from "express";
 import Razorpay from "razorpay";
+import crypto from "crypto";
 
 const router = express.Router();
 
@@ -8,7 +9,7 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// 🔥 PREMIUM - ONE-TIME ORDER (No auto-debit)
+// 🔥 PREMIUM ORDER - One-time payment, no auto-debit
 router.post("/", async (req, res) => {
   try {
     const { app_id, user_id } = req.body;
@@ -26,21 +27,9 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "App not found" });
     }
 
-    const { data: activeSub } = await supabaseAdmin
-      .from("subscriptions")
-      .select("*")
-      .eq("user_id", user_id)
-      .eq("app_id", app_id)
-      .in("status", ["active", "trial"])
-      .maybeSingle();
+    const fullPrice = app.price || 499;
 
-    if (activeSub) {
-      return res.status(400).json({ error: "Subscription already active" });
-    }
-
-    const fullPrice = app.price || 1499;
-
-    // 🔥 FIX: Create ONE-TIME ORDER (no recurrence)
+    // Create one-time order
     const order = await razorpay.orders.create({
       amount: fullPrice * 100,
       currency: "INR",
@@ -53,43 +42,24 @@ router.post("/", async (req, res) => {
       }
     });
 
-    console.log("✅ Premium order created (one-time):", order.id);
+    console.log("✅ Premium order created:", order.id);
 
-    const currentTimestamp = new Date().toISOString();
-    const endDate = new Date();
-    endDate.setFullYear(endDate.getFullYear() + 1);  // 1 year access
-
-    const { data: existingRow } = await supabaseAdmin
+    // Save to database
+    const { error: insertError } = await supabaseAdmin
       .from("subscriptions")
-      .select("*")
-      .eq("user_id", user_id)
-      .eq("app_id", app_id)
-      .maybeSingle();
+      .insert({
+        user_id: user_id,
+        app_id: app_id,
+        status: "pending",
+        amount: fullPrice,
+        razorpay_order_id: order.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
 
-    if (existingRow) {
-      await supabaseAdmin
-        .from("subscriptions")
-        .update({
-          status: "pending_direct",
-          amount: fullPrice,
-          razorpay_order_id: order.id,
-          end_date: endDate.toISOString(),
-          updated_at: currentTimestamp
-        })
-        .eq("id", existingRow.id);
-    } else {
-      await supabaseAdmin
-        .from("subscriptions")
-        .insert({
-          user_id: user_id,
-          app_id: app_id,
-          status: "pending_direct",
-          amount: fullPrice,
-          razorpay_order_id: order.id,
-          end_date: endDate.toISOString(),
-          created_at: currentTimestamp,
-          updated_at: currentTimestamp
-        });
+    if (insertError) {
+      console.error("DB insert error:", insertError);
+      return res.status(500).json({ error: "Failed to save order" });
     }
 
     res.json({
@@ -97,7 +67,8 @@ router.post("/", async (req, res) => {
       key: process.env.RAZORPAY_KEY_ID,
       order_id: order.id,
       amount: fullPrice,
-      is_recurring: false
+      is_recurring: false,
+      message: "One-time payment of ₹" + fullPrice + " for 1 year access. No auto-debit."
     });
 
   } catch (err) {
@@ -112,8 +83,7 @@ router.post("/verify", async (req, res) => {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
     const supabaseAdmin = req.app.locals.supabaseAdmin;
 
-    const crypto = await import("crypto");
-    const sign = crypto.default
+    const sign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + "|" + razorpay_payment_id)
       .digest("hex");
@@ -122,17 +92,12 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    const { data: app } = await supabaseAdmin
-      .from("apps")
-      .select("price")
-      .eq("id", app_id)
-      .single();
-
     const start = new Date();
     const end = new Date();
     end.setFullYear(end.getFullYear() + 1);
 
-    await supabaseAdmin
+    // Update subscription to active
+    const { error: updateError } = await supabaseAdmin
       .from("subscriptions")
       .update({
         status: "active",
@@ -144,8 +109,13 @@ router.post("/verify", async (req, res) => {
       .eq("user_id", user_id)
       .eq("app_id", app_id);
 
-    console.log(`✅ PREMIUM ACTIVATED (one-time): ${razorpay_payment_id}`);
-    res.json({ success: true });
+    if (updateError) {
+      console.error("DB update error:", updateError);
+      return res.status(500).json({ error: "Failed to update subscription" });
+    }
+
+    console.log(`✅ PREMIUM ACTIVATED: ${razorpay_payment_id}`);
+    res.json({ success: true, message: "Premium access activated for 1 year!" });
 
   } catch (err) {
     console.error("Verify error:", err);

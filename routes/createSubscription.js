@@ -16,6 +16,11 @@ router.post("/", async (req, res) => {
 
     console.log("📥 Trial request:", { app_id, user_id });
 
+    // Validation
+    if (!app_id || !user_id) {
+      return res.status(400).json({ error: "app_id and user_id are required" });
+    }
+
     const { data: app, error: appError } = await supabaseAdmin
       .from("apps")
       .select("*")
@@ -23,6 +28,7 @@ router.post("/", async (req, res) => {
       .single();
 
     if (appError || !app) {
+      console.error("App not found:", appError);
       return res.status(404).json({ error: "App not found" });
     }
 
@@ -35,7 +41,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Razorpay plan not configured" });
     }
 
-    // 🔥 Check existing subscription
+    // Check existing subscription
     const { data: existingRow } = await supabaseAdmin
       .from("subscriptions")
       .select("*")
@@ -43,12 +49,16 @@ router.post("/", async (req, res) => {
       .eq("app_id", app_id)
       .maybeSingle();
 
-    // If already active or trial, don't allow new
     if (existingRow && (existingRow.status === "active" || existingRow.status === "trial")) {
       return res.status(400).json({ error: "Subscription already active" });
     }
 
-    // 🔥 Create subscription in Razorpay
+    // 🔥 FIX: receipt length must be <= 40 characters for notes
+    const shortUserId = user_id.split('-')[0];
+    const timestamp = Date.now().toString().slice(-8);
+    const receiptNote = `trial_${shortUserId}_${timestamp}`.slice(0, 40);
+
+    // Create subscription in Razorpay
     const subscription = await razorpay.subscriptions.create({
       plan_id: planId,
       customer_notify: 1,
@@ -69,7 +79,8 @@ router.post("/", async (req, res) => {
         app_id: app_id,
         user_id: user_id,
         trial_days: trialDays,
-        full_amount: fullAmount
+        full_amount: fullAmount,
+        receipt: receiptNote
       }
     });
 
@@ -79,7 +90,7 @@ router.post("/", async (req, res) => {
     trialEndDate.setDate(trialEndDate.getDate() + trialDays);
     const subscriptionStartAt = new Date(subscription.start_at * 1000).toISOString();
 
-    // 🔥 UPSERT - Set status to pending_trial
+    // UPSERT - Set status to pending_trial
     if (existingRow) {
       const { error: updateError } = await supabaseAdmin
         .from("subscriptions")
@@ -144,6 +155,8 @@ router.post("/verify-subscription", async (req, res) => {
     const supabaseAdmin = req.app.locals.supabaseAdmin;
     const crypto = await import("crypto");
 
+    console.log("📥 Verify trial:", { razorpay_subscription_id, razorpay_payment_id, user_id, app_id });
+
     const sign = crypto.default
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_subscription_id + "|" + razorpay_payment_id)
@@ -153,7 +166,7 @@ router.post("/verify-subscription", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    // 🔥 Update status to "trial"
+    // Update status to "trial"
     const { error: updateError } = await supabaseAdmin
       .from("subscriptions")
       .update({

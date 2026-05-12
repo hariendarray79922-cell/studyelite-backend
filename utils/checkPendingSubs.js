@@ -1,7 +1,7 @@
 import Razorpay from "razorpay";
 import { createClient } from "@supabase/supabase-js";
 
-// 🔥 HELPER: Convert to Indian Time (IST)
+// 🔥 HELPER: Convert to IST (Indian Time UTC+5:30)
 function toIST(date) {
   const istOffset = 5.5 * 60 * 60 * 1000;
   return new Date(date.getTime() + istOffset);
@@ -33,7 +33,7 @@ export async function checkPendingSubscriptions() {
 
     for (const sub of subs) {
       try {
-        // 🔥 CHECK 1: pending_direct - Check if too old (30 minutes)
+        // CHECK 1: pending_direct - Check if too old (30 minutes)
         if (sub.status === "pending_direct" && sub.created_at) {
           const created = new Date(sub.created_at);
           const now = new Date();
@@ -53,30 +53,25 @@ export async function checkPendingSubscriptions() {
           }
         }
         
-        // 🔥 CHECK 2: Check with Razorpay
+        // CHECK 2: Check with Razorpay
         if (sub.razorpay_subscription_id) {
           const rpSub = await razorpay.subscriptions.fetch(sub.razorpay_subscription_id);
           
-          // pending → authenticated (payment done)
           if ((sub.status === "pending" || sub.status === "pending_trial") && rpSub.status === "authenticated") {
             const trialDays = sub.apps?.trial_days || 7;
             
-            // 🔥🔥🔥 Convert Razorpay start_at to IST
+            // 🔥🔥🔥 ONLY THIS CHANGED - Convert to Indian Time (IST)
             const utcStartAt = new Date(rpSub.start_at * 1000);
             const istStartAt = toIST(utcStartAt);
             
             const endDate = new Date(istStartAt);
             endDate.setDate(endDate.getDate() + trialDays);
             
-            console.log(`🕐 Checker - UTC Start: ${utcStartAt.toISOString()}`);
-            console.log(`🕐 Checker - IST Start: ${istStartAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
-            console.log(`📅 Checker - IST End: ${endDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
-            
             await supabaseAdmin
               .from("subscriptions")
               .update({
                 status: "trial",
-                razorpay_subscription_start_at: istStartAt.toISOString(), // 🔥 UPDATE IST
+                razorpay_subscription_start_at: istStartAt.toISOString(), // 🔥 Indian time
                 start_date: istStartAt.toISOString(),
                 end_date: endDate.toISOString(),
                 updated_at: new Date().toISOString()
@@ -113,7 +108,7 @@ export async function checkPendingSubscriptions() {
           }
         }
         
-        // 🔥 CHECK 3: Check direct orders
+        // CHECK 3: Check direct orders
         if (sub.razorpay_order_id && sub.status === "pending_direct") {
           try {
             const order = await razorpay.orders.fetch(sub.razorpay_order_id);
@@ -139,7 +134,7 @@ export async function checkPendingSubscriptions() {
           }
         }
         
-        // 🔥 CHECK 4: Expired subscriptions
+        // CHECK 4: Expired subscriptions
         if (sub.end_date && new Date(sub.end_date) < new Date() && (sub.status === "trial" || sub.status === "active")) {
           await supabaseAdmin
             .from("subscriptions")

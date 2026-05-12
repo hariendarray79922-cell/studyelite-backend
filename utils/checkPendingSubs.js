@@ -13,65 +13,50 @@ export async function checkPendingSubscriptions() {
       key_secret: process.env.RAZORPAY_KEY_SECRET
     });
 
-    // Check ALL active/trial subscriptions (not just pending)
+    // 🔥 Check all pending and trial subscriptions
     const { data: subs } = await supabaseAdmin
       .from("subscriptions")
-      .select("*")
-      .in("status", ["pending", "trial", "active", "halted"]);
+      .select("*, apps(trial_days)")
+      .in("status", ["pending", "pending_trial", "pending_direct", "trial", "active"]);
 
     if (!subs || subs.length === 0) {
-      console.log("ℹ️ No subscriptions to check");
+      // Silent - no log spam
       return;
     }
 
-    const now = new Date();
+    console.log(`🔍 Checking ${subs.length} subscriptions...`);
+    let updated = 0;
 
     for (const sub of subs) {
       try {
-        // 🔥 CHECK 1: EXPIRED SUBSCRIPTIONS (end_date passed)
-        if (sub.end_date && new Date(sub.end_date) < now && sub.status === "active") {
-          await supabaseAdmin
-            .from("subscriptions")
-            .update({ 
-              status: "expired", 
-              updated_at: new Date().toISOString()
-            })
-            .eq("id", sub.id);
-          console.log(`⏰ Subscription expired: ${sub.id} (ended on ${sub.end_date})`);
-          continue;
+        // 🔥 CHECK 1: pending_direct - Check if too old (30 minutes)
+        if (sub.status === "pending_direct" && sub.created_at) {
+          const created = new Date(sub.created_at);
+          const now = new Date();
+          const minutesPassed = (now - created) / (1000 * 60);
+          
+          if (minutesPassed > 30) {
+            await supabaseAdmin
+              .from("subscriptions")
+              .update({ 
+                status: "failed", 
+                updated_at: new Date().toISOString()
+              })
+              .eq("id", sub.id);
+            console.log(`⏰ Direct payment expired: ${sub.id}`);
+            updated++;
+            continue;
+          }
         }
-
-        // 🔥 CHECK 2: HALTED SUBSCRIPTIONS (trial ended without payment)
-        if (sub.status === "trial" && sub.end_date && new Date(sub.end_date) < now) {
-          await supabaseAdmin
-            .from("subscriptions")
-            .update({ 
-              status: "halted", 
-              halted_reason: "trial_expired_no_payment",
-              updated_at: new Date().toISOString()
-            })
-            .eq("id", sub.id);
-          console.log(`⏸️ Trial halted (expired without payment): ${sub.id}`);
-          continue;
-        }
-
-        // 🔥 CHECK 3: Check with Razorpay for real status
+        
+        // 🔥 CHECK 2: Check with Razorpay
         if (sub.razorpay_subscription_id) {
           const rpSub = await razorpay.subscriptions.fetch(sub.razorpay_subscription_id);
-          console.log("🔎 Subscription:", sub.razorpay_subscription_id, rpSub.status);
-
-          // Pending → Authenticated (Payment done)
-          if (sub.status === "pending" && rpSub.status === "authenticated") {
-            const appId = sub.app_id;
-            const { data: app } = await supabaseAdmin
-              .from("apps")
-              .select("trial_days")
-              .eq("id", appId)
-              .single();
-            
-            const trialDays = app?.trial_days || 7;
-            const razorpayStartAt = rpSub.start_at;
-            const startDate = new Date(razorpayStartAt * 1000);
+          
+          // pending → authenticated (payment done)
+          if ((sub.status === "pending" || sub.status === "pending_trial") && rpSub.status === "authenticated") {
+            const trialDays = sub.apps?.trial_days || 7;
+            const startDate = new Date(rpSub.start_at * 1000);
             const endDate = new Date(startDate);
             endDate.setDate(endDate.getDate() + trialDays);
             
@@ -85,50 +70,84 @@ export async function checkPendingSubscriptions() {
               })
               .eq("id", sub.id);
             console.log(`✅ Trial started via checker: ${sub.id}`);
+            updated++;
           }
-
-          // Trial → Cancelled (User cancelled autopay)
+          
+          // trial → active (first payment captured)
+          if (sub.status === "trial" && rpSub.status === "active") {
+            await supabaseAdmin
+              .from("subscriptions")
+              .update({
+                status: "active",
+                updated_at: new Date().toISOString()
+              })
+              .eq("id", sub.id);
+            console.log(`✅ Subscription active via checker: ${sub.id}`);
+            updated++;
+          }
+          
+          // trial → cancelled (user cancelled)
           if (sub.status === "trial" && rpSub.status === "cancelled" && !sub.razorpay_payment_id) {
             await supabaseAdmin
               .from("subscriptions")
               .update({ 
                 status: "trial_cancelled", 
-                cancelled_reason: "autopay_cancelled",
                 updated_at: new Date().toISOString()
               })
               .eq("id", sub.id);
-            console.log("🚫 Trial cancelled (autopay off):", sub.id);
-          }
-
-          // Active → Halted (Payment failed)
-          if (sub.status === "active" && rpSub.status === "halted") {
-            await supabaseAdmin
-              .from("subscriptions")
-              .update({ 
-                status: "halted", 
-                halted_reason: "payment_failed",
-                updated_at: new Date().toISOString()
-              })
-              .eq("id", sub.id);
-            console.log("⏸️ Subscription halted (payment failed):", sub.id);
-          }
-
-          // Active → Completed (All cycles done)
-          if (sub.status === "active" && rpSub.status === "completed") {
-            await supabaseAdmin
-              .from("subscriptions")
-              .update({ 
-                status: "completed", 
-                updated_at: new Date().toISOString()
-              })
-              .eq("id", sub.id);
-            console.log("✅ Subscription completed all cycles:", sub.id);
+            console.log(`🚫 Trial cancelled: ${sub.id}`);
+            updated++;
           }
         }
+        
+        // 🔥 CHECK 3: Check direct orders
+        if (sub.razorpay_order_id && sub.status === "pending_direct") {
+          try {
+            const order = await razorpay.orders.fetch(sub.razorpay_order_id);
+            if (order.status === "paid") {
+              const start = new Date();
+              const end = new Date();
+              end.setFullYear(end.getFullYear() + 100);
+              
+              await supabaseAdmin
+                .from("subscriptions")
+                .update({
+                  status: "active",
+                  start_date: start.toISOString(),
+                  end_date: end.toISOString(),
+                  updated_at: new Date().toISOString()
+                })
+                .eq("id", sub.id);
+              console.log(`✅ Direct order paid via checker: ${sub.id}`);
+              updated++;
+            }
+          } catch (e) {
+            // Order not found or error
+          }
+        }
+        
+        // 🔥 CHECK 4: Expired subscriptions
+        if (sub.end_date && new Date(sub.end_date) < new Date() && (sub.status === "trial" || sub.status === "active")) {
+          await supabaseAdmin
+            .from("subscriptions")
+            .update({ 
+              status: sub.status === "trial" ? "expired" : "expired",
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", sub.id);
+          console.log(`⏰ Subscription expired: ${sub.id}`);
+          updated++;
+        }
+        
       } catch (e) {
-        console.log("⏭️ Skipped:", sub.razorpay_subscription_id, e.message);
+        console.log(`⏭️ Skipped ${sub.id}:`, e.message);
       }
     }
+    
+    if (updated > 0) {
+      console.log(`✅ Updated ${updated} subscriptions`);
+    }
+
   } catch (err) {
     console.log("🔥 Checker error:", err.message);
   }

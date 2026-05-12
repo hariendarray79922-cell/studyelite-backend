@@ -23,26 +23,24 @@ const supabaseAdmin = createClient(
 
 app.locals.supabaseAdmin = supabaseAdmin;
 
-// Webhook (raw body)
+// 🔥 FIX: Webhook MUST be before express.json()
 app.use("/webhook", express.raw({ type: "application/json" }), webhook);
 
-// JSON parser
+// JSON parser for other routes
 app.use(express.json());
 
-// ✅ OTP ROUTES
+// Routes
 app.use("/api", otpRoutes);
-
-// ✅ PAYMENT ROUTES
 app.use("/create-order", createOrder);
 app.use("/create-subscription", createSubscription);
 app.use("/cancel-subscription", cancelSubscription);
 
-// ✅ HEALTH CHECK
+// Health check
 app.get("/", (req, res) => {
   res.send("StudyElite Backend Running 🚀");
 });
 
-// ✅ BACKGROUND CHECK
+// Background checker
 setInterval(() => {
   checkPendingSubscriptions();
 }, 60 * 1000);

@@ -1,6 +1,12 @@
 import Razorpay from "razorpay";
 import { createClient } from "@supabase/supabase-js";
 
+// 🔥 HELPER: Convert to Indian Time (IST)
+function toIST(date) {
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  return new Date(date.getTime() + istOffset);
+}
+
 export async function checkPendingSubscriptions() {
   try {
     const supabaseAdmin = createClient(
@@ -13,14 +19,12 @@ export async function checkPendingSubscriptions() {
       key_secret: process.env.RAZORPAY_KEY_SECRET
     });
 
-    // 🔥 Check all pending and trial subscriptions
     const { data: subs } = await supabaseAdmin
       .from("subscriptions")
       .select("*, apps(trial_days)")
       .in("status", ["pending", "pending_trial", "pending_direct", "trial", "active"]);
 
     if (!subs || subs.length === 0) {
-      // Silent - no log spam
       return;
     }
 
@@ -56,15 +60,24 @@ export async function checkPendingSubscriptions() {
           // pending → authenticated (payment done)
           if ((sub.status === "pending" || sub.status === "pending_trial") && rpSub.status === "authenticated") {
             const trialDays = sub.apps?.trial_days || 7;
-            const startDate = new Date(rpSub.start_at * 1000);
-            const endDate = new Date(startDate);
+            
+            // 🔥🔥🔥 Convert Razorpay start_at to IST
+            const utcStartAt = new Date(rpSub.start_at * 1000);
+            const istStartAt = toIST(utcStartAt);
+            
+            const endDate = new Date(istStartAt);
             endDate.setDate(endDate.getDate() + trialDays);
+            
+            console.log(`🕐 Checker - UTC Start: ${utcStartAt.toISOString()}`);
+            console.log(`🕐 Checker - IST Start: ${istStartAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+            console.log(`📅 Checker - IST End: ${endDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
             
             await supabaseAdmin
               .from("subscriptions")
               .update({
                 status: "trial",
-                start_date: startDate.toISOString(),
+                razorpay_subscription_start_at: istStartAt.toISOString(), // 🔥 UPDATE IST
+                start_date: istStartAt.toISOString(),
                 end_date: endDate.toISOString(),
                 updated_at: new Date().toISOString()
               })
@@ -131,7 +144,7 @@ export async function checkPendingSubscriptions() {
           await supabaseAdmin
             .from("subscriptions")
             .update({ 
-              status: sub.status === "trial" ? "expired" : "expired",
+              status: "expired", 
               updated_at: new Date().toISOString()
             })
             .eq("id", sub.id);

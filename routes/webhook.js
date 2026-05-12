@@ -1,12 +1,17 @@
 import crypto from "crypto";
 
+// 🔥 HELPER: Convert to Indian Time (IST)
+function toIST(date) {
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  return new Date(date.getTime() + istOffset);
+}
+
 export default async function webhook(req, res) {
   try {
     const supabaseAdmin = req.app.locals.supabaseAdmin;
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
     const signature = req.headers["x-razorpay-signature"];
     
-    // Get raw body
     const body = req.body.toString();
     
     const expectedSignature = crypto
@@ -28,10 +33,18 @@ export default async function webhook(req, res) {
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
       
+      // 🔥🔥🔥 Convert Razorpay start_at to IST
+      const utcStartAt = new Date(sub.start_at * 1000);
+      const istStartAt = toIST(utcStartAt);
+      
+      console.log(`🕐 Webhook - UTC Start: ${utcStartAt.toISOString()}`);
+      console.log(`🕐 Webhook - IST Start: ${istStartAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+      
       const { error } = await supabaseAdmin
         .from("subscriptions")
         .update({
           status: "trial",
+          razorpay_subscription_start_at: istStartAt.toISOString(), // 🔥 UPDATE IST
           updated_at: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", sub.id)
@@ -51,7 +64,6 @@ export default async function webhook(req, res) {
       const orderId = payment.order_id;
       
       if (subId) {
-        // Trial subscription payment
         const { error } = await supabaseAdmin
           .from("subscriptions")
           .update({
@@ -67,7 +79,6 @@ export default async function webhook(req, res) {
           console.log("💰 Subscription payment captured:", payment.id);
         }
       } else if (orderId) {
-        // Direct order payment
         const { error } = await supabaseAdmin
           .from("subscriptions")
           .update({

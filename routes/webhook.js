@@ -1,6 +1,6 @@
 import crypto from "crypto";
 
-// 🔥 HELPER: Convert to Indian Time (IST)
+// 🔥 HELPER: Convert to IST (Indian Time UTC+5:30)
 function toIST(date) {
   const istOffset = 5.5 * 60 * 60 * 1000;
   return new Date(date.getTime() + istOffset);
@@ -33,18 +33,16 @@ export default async function webhook(req, res) {
     if (event === "subscription.authenticated") {
       const sub = payload.payload.subscription.entity;
       
-      // 🔥🔥🔥 Convert Razorpay start_at to IST
+      // 🔥🔥🔥 ONLY THIS CHANGED - Convert to Indian Time (IST)
       const utcStartAt = new Date(sub.start_at * 1000);
       const istStartAt = toIST(utcStartAt);
-      
-      console.log(`🕐 Webhook - UTC Start: ${utcStartAt.toISOString()}`);
-      console.log(`🕐 Webhook - IST Start: ${istStartAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`);
+      const istStartAtISO = istStartAt.toISOString();
       
       const { error } = await supabaseAdmin
         .from("subscriptions")
         .update({
           status: "trial",
-          razorpay_subscription_start_at: istStartAt.toISOString(), // 🔥 UPDATE IST
+          razorpay_subscription_start_at: istStartAtISO, // 🔥 Indian time stored
           updated_at: new Date().toISOString()
         })
         .eq("razorpay_subscription_id", sub.id)
@@ -57,7 +55,7 @@ export default async function webhook(req, res) {
       }
     }
 
-    // 🔥 PAYMENT CAPTURED (Direct payment or auto-debit)
+    // 🔥 PAYMENT CAPTURED (No changes)
     if (event === "payment.captured") {
       const payment = payload.payload.payment.entity;
       const subId = payment.subscription_id;
@@ -96,7 +94,7 @@ export default async function webhook(req, res) {
       }
     }
 
-    // 🔥 SUBSCRIPTION CANCELLED
+    // 🔥 SUBSCRIPTION CANCELLED (No changes)
     if (event === "subscription.cancelled") {
       const sub = payload.payload.subscription.entity;
       

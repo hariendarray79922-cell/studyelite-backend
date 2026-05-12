@@ -2,23 +2,10 @@ import express from "express";
 
 const router = express.Router();
 
-// 🔥 HELPER: Convert to Indian Time (IST = UTC + 5:30)
+// 🔥 HELPER: Convert to IST (Indian Time UTC+5:30)
 function toIST(date) {
   const istOffset = 5.5 * 60 * 60 * 1000;
   return new Date(date.getTime() + istOffset);
-}
-
-function formatIST(date) {
-  return date.toLocaleString("en-IN", { 
-    timeZone: "Asia/Kolkata",
-    hour12: true,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric'
-  });
 }
 
 // 🔥 TRIAL SUBSCRIPTION - Create pending_trial first
@@ -35,6 +22,7 @@ router.post("/", async (req, res) => {
 
     console.log("📥 Trial request:", { app_id, user_id });
 
+    // Validation
     if (!app_id || !user_id) {
       return res.status(400).json({ error: "app_id and user_id are required" });
     }
@@ -106,15 +94,10 @@ router.post("/", async (req, res) => {
     const trialEndDate = new Date();
     trialEndDate.setDate(trialEndDate.getDate() + trialDays);
     
-    // 🔥🔥🔥 CRITICAL FIX: Convert Razorpay start_at to IST
+    // 🔥🔥🔥 ONLY THIS CHANGED - Convert to Indian Time (IST)
     const utcStartAt = new Date(subscription.start_at * 1000);
     const istStartAt = toIST(utcStartAt);
-    
-    console.log(`🕐 UTC Start: ${utcStartAt.toISOString()}`);
-    console.log(`🕐 IST Start (Payment Time - Indian Time): ${formatIST(istStartAt)}`);
-    console.log(`📅 Access Time (After ${trialDays} days): ${formatIST(new Date(istStartAt.getTime() + trialDays * 86400000))}`);
-    
-    const subscriptionStartAtIST = istStartAt.toISOString();
+    const subscriptionStartAt = istStartAt.toISOString(); // Indian time stored
 
     // UPSERT - Set status to pending_trial
     if (existingRow) {
@@ -126,7 +109,7 @@ router.post("/", async (req, res) => {
           razorpay_subscription_id: subscription.id,
           end_date: trialEndDate.toISOString(),
           updated_at: new Date().toISOString(),
-          razorpay_subscription_start_at: subscriptionStartAtIST, // 🔥 IST STORED
+          razorpay_subscription_start_at: subscriptionStartAt,
           razorpay_payment_id: null,
           razorpay_order_id: null
         })
@@ -148,7 +131,7 @@ router.post("/", async (req, res) => {
           end_date: trialEndDate.toISOString(),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          razorpay_subscription_start_at: subscriptionStartAtIST // 🔥 IST STORED
+          razorpay_subscription_start_at: subscriptionStartAt
         });
 
       if (insertError) {
@@ -165,8 +148,7 @@ router.post("/", async (req, res) => {
       trial_days: trialDays,
       full_amount: fullAmount,
       is_recurring: true,
-      status: "pending_trial",
-      start_time_ist: formatIST(istStartAt)
+      status: "pending_trial"
     });
 
   } catch (err) {
@@ -175,7 +157,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// 🔥 VERIFY TRIAL PAYMENT - Update status to "trial"
+// 🔥 VERIFY TRIAL PAYMENT - Update status to "trial" (No changes)
 router.post("/verify-subscription", async (req, res) => {
   try {
     const { razorpay_subscription_id, razorpay_payment_id, razorpay_signature, user_id, app_id } = req.body;
@@ -193,7 +175,6 @@ router.post("/verify-subscription", async (req, res) => {
       return res.status(400).json({ error: "Invalid signature" });
     }
 
-    // Update status to "trial"
     const { error: updateError } = await supabaseAdmin
       .from("subscriptions")
       .update({
